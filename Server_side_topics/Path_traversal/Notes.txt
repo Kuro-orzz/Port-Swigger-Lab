@@ -1,0 +1,44 @@
+01_File_path_traversal_simple_case
+- Get img by file path -> Change path to vuln file from current directory ../../../etc/passwd
+- Description:
++ /etc/passwd: info https://funix.edu.vn/chia-se-kien-thuc/file-etc-passwd-la-gi-va-no-duoc-su-dung-de-lam-gi/
+    username:password:userId:groupId:GECOS:HomeDirectory:Shell
++ /etc/shadow: save hash password, info https://www.cyberciti.biz/faq/understanding-etcshadow-file/
+
+02_File_path_traversal_traversal_sequences_blocked_with_absolute_path_bypass
+- Get img by file path -> Change path to vuln file /etc/passwd
+- Description:
++ Block traversal sequences by block '.' or '../'
++ But not block absolute file path like '/etc/passwd' or '/var/www/images/41.jpg'
+
+03_File_path_traversal_traversal_sequences_stripped_non_recursively
+- Get img by file path -> Change path to vuln file ....//....//....//etc/passwd
+- Description:
++ Bypass filter path traversal, nested traversal sequences
++ When server replace("../",""), '....//' will become '../'
+
+04_File_path_traversal_traversal_sequences_stripped_with_superfluous_URL_decode
+- Get img by file path -> Change path to vuln file %252e%252e%252f%252e%252e%252f%252e%252e%252fetc/passwd
+                                                   %252e%252e/%252e%252e/%252e%252e/etc/passwd
+- Description:
++ Double encoding Bypass
++ '%' -> '%25'
++ '.' -> '%2e' -> '%252e'
+  '/' -> '%2f' -> '%252f'
+
+05_File_path_traversal_validation_of_start_of_path
+- Get img by file path -> Change path to vuln file /var/www/images/../../../etc/passwd
+- Description: 
++ Web require user supplied filename to start with the expected base folder
+
+06_File_path_traversal_validation_of_file_extension_with_null_byte_bypass
+- Get img by file path -> Change path to vuln file ../../../etc/passwd%00.jpg
+- Description:
++ Web require user supplied filename to end with an expected file extension
+
+
+How to prevent:
+- The most effective way to prevent path traversal vulnerabilities is to avoid passing user-supplied input to filesystem APIs altogether.
+- If can't avoid passing user-supplied input to filesystem APIs, recommend using two layers of defense to prevent attacks:
++ Validate the user input before processing it. Ideally, compare the user input with a whitelist of permitted values. If that isn't possible, verify that the input contains only permitted content, such as alphanumeric characters only.
++ After validating the supplied input, append the input to the base directory and use a platform filesystem API to canonicalize the path. Verify that the canonicalized path starts with the expected base directory.

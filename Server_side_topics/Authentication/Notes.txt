@@ -1,0 +1,94 @@
+01_Username_enumeration_via_different_responses:
+- Bruteforce -> Different length response
+
+02_2FA_simple_bypass
+- Login -> Redirect to 2fa -> Misconfiguration -> Just go back to profile
+- Because of misconfig, you have been verified just after click login.
+
+03_Password_reset_broken_logic
+- Get validated reset_pass url -> Misconfiguration -> modify payload to target username
+- Description:
++ First when we have account, try reset password my own account
++ Then see a token_forgot_pass in url, but because server misconfiguration, it does not validate the token
++ Just modify username in payload to reset target account
+
+04_Username_enumeration_via_subtly_different_responses
+- Bruteforce username -> Response in valid and invalid username is different -> Found valid username -> Bruteforce password -> Different length response
+- Description: a small mistake when typing code but need to becareful
+
+05_Username_enumeration_via_response_timing
+- Bruteforce username with long password -> Response timing of valid username is depend on password length -> Found valid username -> Bruteforce password -> Different length response
+- Description: 
++ Web locked IP after 3 try, so adding header 'X-Forwarded-For' and value increase to fake IP
++ If invalid username, after check username, it's reurn response and not check password -> Faster
++ If valid username, it will check password before return response -> Slower
++ Compare different in response time
+
+06_Broken_brute_force_protection_IP_block
+- Bruteforce n-1 time before being locked by web -> Login account my own -> Reset counting -> Repeat until get valid credential by different length response or status code
+- Description:
++ Try n-1 times before locked by web
++ Then login my own valid account -> Reset counting
++ Repeat untill success
++ Mis config when try to block bruteforces
+
+07_Username_enumeration_via_account_lock
+- Try to request n+1 times each users -> Valid and invalid username response is different -> Found valid username -> Bruteforce by compare response text
+- Description:
++ Each valid account have 4 times trying to guess password before locked for 1 min
++ Although after username being locked, response between valid and invalid username is different
++ Check different to find valid username then bruteforce password
+
+08_2FA_broken_logic
+- Generate mfa codes for target -> bruteforce mfa codes -> Until get status code 302
+- Description: 
++ Flaw when generate mfa code, it's only check cookie to generate mfa -> Fake cookie to carlos
++ Mfa code not block bruteforce -> Just bruteforce until get mfa code
+
+09_Brute_forcing_a_stay_logged_in_cookie
+- Bruteforce token stay_logged by trying any password combine username -> Go to /my-account?id=carlos and add stay_logged to cookie -> Try until get status code 200
+- Description: 
++ When try to login my own account with stay_logged option, got a valid token
++ Put token to https://hashes.com/en/tools/hash_identifier and got result token=base64(username+md5_hash(password))
+
+10_Offline_password_cracking
+- XSS injection in comment -> Wait victim click -> Got token -> Try to decode if it's popular password
+- Description:
++ This website have XSS injection in comment
++ Try script XSS to get target's cookie
++ Wait until victim click that page and cookie is sent to exploit server
++ In cookie have stay_logged token
++ Put token to https://hashes.com/en/tools/hash_identifier and got result token=base64(username+md5_hash(password))
++ Decode base64 and get a password_md5_hashed
++ Put it in https://crackstation.net/, if it's a popular password, this web can crack 
+
+11_Password_reset_poisoning_via_middleware
+- Fake host header -> Wait victim click link -> Got reset password token -> Reset victim password
+- Description: 
++ Vulnerable to password reset poisoning, target user click to any link receive
++ Add headers 'X-Forwarded-Host' and url to exploit server
++ Wait for victim click it and we receive reset password token
++ Reset password and login to victim account
++ Some header can alter host: X-Forwarded-Host, X-Host, X-Forwarded-Server, X-HTTP-Host-Override, Forwarded
+
+12_Password_brute_force_via_password_change
+- Go to password_change_url -> Bruteforce
+- Description: 
++ Vulnerable in password change function, not limit try or not block bruteforce by IP
++ Go to change password url and bruteforce
+
+13_Broken_brute_force_protection_multiple_credentials_per_request
+- Put all passwords in 1 request -> Get cookies -> Reuse session cookies
+- Description: 
++ After 2 or 3 fail request, web locked 1 min
++ But payload is json type, so add all password to array and put in 1 payload
++ Get session cookies and reuse it
+
+14_2FA_bypass_using_a_brute_force_attack
+- Login -> Try mfa -> repeat until got mfa code
+- Description:
++ Just bruteforce mfa like it said
++ But after 2 try, it will log out and after a short time, code will change
++ So you have to login->try->mfa->login->...
++ Need multi thread for python code to make it faster before mfa changed
++ In some case, you have to repeat try until find it

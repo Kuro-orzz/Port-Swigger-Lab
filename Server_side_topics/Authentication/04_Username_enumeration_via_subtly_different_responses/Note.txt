@@ -1,0 +1,5 @@
+Can't do this attack like the easy version, the length of response is different each time, depend on token size or st
+
+Burp Suite solve:
+- There is a typing error in the response, just filter it, check the one username that have "Invalid username and password" with out "." in the end
+After we have valid username, just brute force password and see the one that return status code 302

@@ -1,0 +1,44 @@
+Common sources of information disclosure:
+- Files for web crawlers: /robots.txt, /sitemap.xml
+- Directory listings
+- Developer comments: should remove before deployed to product enviroment, but sometimes they forgot
+- Error messages
+- Debugging data, sometimes contain vital information for developing an attack, including:
++ Values for key session variables that can be manipulated via user input
++ Hostnames and credentials for back-end components
++ File and directory names on the server
++ Keys used to encrypt data transmitted via the client
+- User account pages
+- Source code disclosure via backup files
+- Information disclosure due to insecure configuration
+- Version control history
+
+
+01_Information_disclosure_in_error_messages
+- Just send invalid value
+- GET /product?productId=1  ---> GET /product?productId=asd
+- You will find the version of apache in the end of request
+
+02_Information_disclosure_on_debug_page
+- Go to dev_tool (F12) -> Network tab -> Read the response
+- You will find a comment "<!-- <a href=/cgi-bin/phpinfo.php>Debug</a> -->"
+- Go to that path "/cgi-bin/phpinfo.php"
+- Then find SECRET_KEY on that page
+
+03_Source_code_disclosure_via_backup_files
+- Go to /robots.txt, you will see a path /backup
+- Go to that path, check file, read source code, you will see a password has been encoded.
+
+04_Authentication_bypass_via_information_disclosure
+- Go to /admin, then replace GET by TRACE
+- In the end, see something like "X-Custom-IP-Authorization: ......."
+- So we know that every single request, it's contain this to make sure user is valid
+- Just add "X-Custom-IP-Authorization: 127.0.0.1" to every request, replace like solution in portswigger
+- Then we can see admin panel in the my-account page
+
+05_Information_disclosure_in_version_control_history
+- Like title said, go to /.git
+- Download by wget -r https://..../.git
+- Read logs, see different between commit
+- Git diff [commit1] [commit2]: see different between 2 commit
+- Login by 'administrator' and '{pass_you_found}'

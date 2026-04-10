@@ -1,0 +1,65 @@
+files = {
+    input_name: (filename, binary_content, contentType),
+    ....
+}
+
+Vulnerabilities:
+- Depend on:
++ Fail to validate properly, size, type, contents,..
++ What restrictions are imposed on the file once it has been successfully uploaded.
+
+- Allow .php, .jsp to be executed as code
+- If fail validate filename, could allow atttacker to overwrite critical file by upload with same name
+- If vuln in directory traversal, attacker can update file to unanticipated locations
+- If fail validate size of file without threshold could enable form of DOS (denial of service)
+
+Resource:
+- https://swisskyrepo.github.io/PayloadsAllTheThings/Upload%20Insecure%20Files/
+
+
+01_Remote_code_execution_via_web_shell_upload
+- Find upload file -> Try upload file with shell script -> Get shell
+- Description:
++ We can upload file to server through avatar
++ Cuz it's not block .php file so just simple update file and add shell script to file
++ Get shell through avatar image
+
+02_Web_shell_upload_via_Content_Type_restriction_bypass
+- Same as 01 chal
+- Just need to change contenType from 'application/x-php' to 'image/jpeg'
+
+03_Web_shell_upload_via_path_traversal
+- Find upload file -> Try upload file with shell script + path traversal -> Get shell
+- Description:
++ This chal prevent file execution in user-accessible directory, when we try to execute inside dir, it's only return image plain text
++ So we can just exploit by path traversal, upload outside the folder '../image.php'
++ And need to encode it '%2e%2e%2fimage.php' to bypass
++ Then just exploit like above chal
+
+04_Web_shell_upload_via_extension_blacklist_bypass
+- Find upload file -> Try upload file with vuln config + shell script -> Get shell
+- Description:
++ If PHP server, trick to execute by '.htaccess'
+     ASP server, trick to execute by 'web.config'
+     uWSGI server, trick to execute by 'uwsgi.ini'
+     python server, trick to execute by '__init__.py'
++ In this chal, my code just add 'AddType application/x-httpd-php .rce' to make .rce file can execute like php
++ Then just upload vuln .rce file to get shell
+
+05_Web_shell_upload_via_obfuscated_file_extension
+- Find upload file -> Try upload file with vuln file ext bypass + shell script -> Get shell
+- Description:
++ This only allow to upload '.jpg', '.png'
++ So '.pHp', '.php.jpg', '.php.', '%2Ephp', '.p.phphp' is failed.
++ Cuz it's check last file ext, so file ext must be '.jpg'.
++ Then we will try to ignore this by something like '.php%00.jpg'
++ Then just normal get shell and exploit
+
+06_Remote_code_execution_via_polyglot_web_shell_upload
+- Find upload file -> Try upload file with shell script in metadata -> Get shell
+- Description:
++ If file ext is suspicious, it'll check magic bytes of file,
++ You can exiftool to add php shell to image metadata
++ "exiftool -Comment="<?php echo 'START ' . file_get_contents('/home/carlos/secret') . ' END'; ?>" <YOUR-INPUT-IMAGE>.jpg -o polyglot.php"
++ Send it to server, then it'll execute and return value
++ Final, Download and read it.

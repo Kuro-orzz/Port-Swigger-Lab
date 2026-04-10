@@ -1,0 +1,5 @@
+- Send Get request with cookie verify=carlos to let server create mfa-code for carlos
+- Then go to Post bruteforce mfa (if only web not limit the number of tries)
+
+
+Note: Should use turbo intruder instead of norm burp intruder (faster a lots)

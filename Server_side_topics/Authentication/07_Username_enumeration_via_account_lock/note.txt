@@ -1,0 +1,1 @@
+Tip: In this case, using python script is faster than burp suite (community version)

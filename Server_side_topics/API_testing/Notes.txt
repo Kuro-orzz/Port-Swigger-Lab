@@ -1,0 +1,34 @@
+01_Exploiting_an_API_endpoint_using_documentation
+- Check API path -> Delete user using API
+- Description:
++ Just bruteforce, dirsearch or try hand by hand to find API document
++ This lab has /api path, and information about get, delete, patch is in there path
+
+03_Finding_and_exploiting_an_unused_API_endpoint
+- Check API path -> using OPTIONS check valid method -> Modify price by PATCH -> Buy it for free now
+- Description:
++ When try to buy a target item, it will call 'GET /api/products/1/price'
++ Use OPTIONS method to check valid that we can use with that API
++ Got ['GET', 'PATCH'] is valid
++ Idea is use PATCH request to modify the price of item to 0
++ Then just buy it as normal
+
+04_Exploiting_a_mass_assignment_vulnerability
+- Check API path -> using OPTIONS check valid method -> Try GET and it return full param -> Add hidden param -> Buy it for free now
+- Description:
++ At first, just add item to cart normally
++ When checkout, we can see it call 'POST /api/checkout'
++ Use OPTIONS method to check valid that we can use with that API
++ Got ['GET', 'PATCH'] is valid
++ Try to use GET request, we get a full param of POST requests
++ With 'chosen_discount' default set to 0
++ Just add it to POST request and fix to 100
+
+
+How to prevent:
+- Secure your documentation if you don't intend your API to be publicly accessible.
+- Ensure your documentation is kept up to date so that legitimate testers have full visibility of the API's attack surface.
+- Apply an allowlist of permitted HTTP methods.
+- Validate that the content type is expected for each request or response.
+- Use generic error messages to avoid giving away information that may be useful for an attacker.
+- Use protective measures on all versions of your API, not just the current production version.

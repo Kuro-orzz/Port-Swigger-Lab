@@ -1,0 +1,6 @@
+Remember to disallow redirect, allow_redirect = False
+
+POST /login  → 302 Redirect
+GET /something → 200
+
+session.get() return final status code
