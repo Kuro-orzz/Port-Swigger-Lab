@@ -1,0 +1,108 @@
+Vertical access controls:
+- Control user based on roles (admin, user,..)
+- Apply Least Privilege Principle
+Horizontal access controls:
+- Authorization based on ownership, restrict access to resources to specific users
+- Advoid user access other users resources 
+Context-dependent access controls:
+- Restrict access to functionality and resources based upon the state of the application or the user's interaction with it.
+- Prevent a user performing actions in the wrong order.
+- Ex: prevent users from modifying the contents of their shopping cart after they have made payment.
+
+Vertical privilege escalation:
+- Unprotected functionality
+- Parameter-based access control methods
+- Broken access control resulting from platform misconfiguration
+- Broken access control resulting from URL-matching discrepancies
++ In Spring 5.3, useSuffixPatternMatch option is enabled by default, so /admin/deleteUser.anything would still match the /admin/deleteUser pattern
++ In some system, /admin/deleteUser and /admin/deleteUser/ is treated as distinct endpoint
+
+Horizontal privilege escalation:
+Horizontal to vertical privilege escalation:
+Insecure direct object references(IDOR)
+Access control vulnerabilities in multi-step processes
+Referer-based access control
+Location-based access control
+
+
+01_Unprotected_admin_functionality
+- Find hidden parameter -> Exploit it
+- Description:
++ Simply go to robots.txt to check, we can see a sensitive url path /administrator-panel
++ Just go to that path and delete carlos account
+
+02_Unprotected_admin_functionality_with_unpredictable_URL
+- Find hidden param -> Exploit it
+- Description:
++ In this lab, the path to admin panel is in source code FE and not control well, so normal user still can access
++ Read FE code, find param, go to that path and exploit
+
+03_User_role_controlled_by_request_parameter
+- Control access through parameter -> Exploit
+- Description:
++ In this lab, we have access through param method
++ Cuz of weak control access, we can just modify the param and become admin
+
+04_User_role_can_be_modified_in_user_profile
+- Control access through parameter -> Exploit
+- Description:
++ Here when we change email, we can modify param roles
++ Cuz weak control, we can become admin and exploit
+
+05_User_ID_controlled_by_request_parameter
+- Control access through parameter -> Exploit
+- Description:
++ We can get other user api_key by just modify the param
++ Just get it easy and submit
+
+06_User_ID_controlled_by_request_parameter_with_unpredictable_user_IDs
+- Control access through parameter -> Exploit
+- Description:
++ This lab has Horizontal privilege escalation
++ Although userId is unpredicted, but it was expose when we click carlos account through blog
++ Get carlos id then change that to get API key
+
+07_User_ID_controlled_by_request_parameter_with_data_leakage_in_redirect
+- Control access through parameter -> Exploit
+- Description:
++ It not allow we to login other user by modify param
++ But the target user sensitive param is leaked in the reponse
+
+08_User_ID_controlled_by_request_parameter_with_password_disclosure
+- Control access through parameter -> Exploit
+- Description:
++ Here we change param, not become admin yet, but we can see admin password
++ So easy login admin account and delete carlos
+
+09_Insecure_direct_object_references
+- Control access through parameter -> Exploit
+- Description:
++ This lab also has IDOR vuln, so we can download other user transcript
++ First when i download my own transcript, it is named 2.txt, so previous log is 1.txt
++ Download 1.txt and get other user sensitive data
+
+10_URL_based_access_control_can_be_circumvented
+- Injection vulnerable header -> Exploit
+- Description:
++ In this lab, we can use header 'X-Original-URL' to allow us access admin panel
++ Then just delete carlos acc
+
+11_Method_based_access_control_can_be_circumvented
+- Weak control in method request -> Exploit
+- Description:
++ Unprotected admin functionality with method interchange
++ Normal user is unauthorized when use admin function with POST method
++ But it's not block normal to use get method to request
++ So change from post to get, then become admin
+
+12_Multi_step_process_with_no_access_control_on_one_step
+- Weak access control in multi step -> Get the last request -> Replay -> Exploit
+- Description:
++ This lab is vulnerable in multi step, last step is not being access control
++ So just call last step and problem solved
+
+13_Referer_based_access_control
+- Weak access control in referer header -> Redirect to attacker server -> Exploit
+- Description:
++ This lab is vulnerable in referer header
++ Just add it and you are authorized

@@ -6,7 +6,7 @@ Done:
 In Progress:
 - SQL injection: 17/18 (1 lab need burp suite professional)
 - OS Command injection: 4/5    (1 lab need burp suite professional)
-- Business logic vulnerabilities: 0/11
+- Business logic vulnerabilities: 3/11
 - Access control: 6/13
 - File upload vulnerabilities: 6/7 (1 lab need to learn race condition first)
 - Race conditions: 0/6

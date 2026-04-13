@@ -20,3 +20,9 @@ Some types of logic flaw base on the initial mistakes that introduced the vulner
 
 
 05_Low_level_logic_flaw
+- Use burp proxy to catch request -> Adding until data overflow -> Adding more to make it positive in total money, but still under $100
+- Description:
++ This lab has logic flaw in handling buffer overflow of variable
++ Just add until it overflow and then add more to make it positive but under $100
+
+06_Inconsistent_handling_of_exceptional_input
