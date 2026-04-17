@@ -2,16 +2,16 @@ Done:
 - Authentication: 14/14
 - Path traversal: 6/6
 - Information disclosure: 5/5 (didn't code yet)
-
-In Progress:
+- Access control: 13/13
+- Web cache deception: 5/5
 - SQL injection: 17/18 (1 lab need burp suite professional)
 - OS Command injection: 4/5    (1 lab need burp suite professional)
-- Business logic vulnerabilities: 3/11
-- Access control: 6/13
+
+In Progress:
 - File upload vulnerabilities: 6/7 (1 lab need to learn race condition first)
+- Business logic vulnerabilities: 3/11
 - Race conditions: 0/6
 - Server-side request forgery (SSRF): 0/7
 - XXE injection: 0/9
 - NoSQL injection: 0/4
 - API testing: 3/5
-- Web cache deception: 0/5

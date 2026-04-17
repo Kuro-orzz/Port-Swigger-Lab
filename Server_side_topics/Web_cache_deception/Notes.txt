@@ -1,0 +1,115 @@
+Web cache deception:
+- Trick a web cache into storing sensitive, dynamic content.
+
+Different between web cache deception -- web cache poisoning:
+- Web cache deception:
+    Attacker send malicious url -> User click -> Server return sensitive data -> Cache sensitive data -> Attacker go to cache to get sensitive info
+- Web cache poisoning:
+    Attacker send malicious content to server -> Server response contain it -> Cache and send to users
+
+Cache keys:
+- Includes the URL path and query parameters, can also include a variety of other elements like headers and content type.
+- If the incoming request's cache key matches that of a previous request, the cache considers them to be equivalent and serves a copy of the cached response.
+
+Cache rules:
+- Cache for how long, static resource
+- Static file extension rules: for example '.css' for stylesheets or '.js' for JavaScript files.
+- Static directory rules: for example '/static' or '/assets'.
+- File name rules: such as 'robots.txt' and 'favicon.ico'.
+
+Constructing a web cache deception attack:
+- Step 1: Identify endpoint return sensitive information, review response
+- Step 2: Identify a discrepancy in how the cache and origin server parse the URL path. How they
+    + Map URLs to resources.
+    + Process delimiter characters.
+    + Normalize paths.
+- Step 3: Generate malicious url to trick the cache into storing a dynamic response -> Wait user access the url -> Go to that url to get sensitive information
+
+- Using a cache buster:
++ Make sure that each request you send has a different cache key
++ Use param miner, select Add dynamic cachebuster, view in Logger
+- Detecting cached responses:
++ Look at response headers and response times
++ 'X-Cache' header provide info about whether it's serve from the cache
+    Hit: server from cache
+    Miss: cache not contain request key, fetched from server
+    Dynamic: origin server dynamic generated the content
+    Refresh: cache content outdated and needed to be refreshed or revalidated
++ 'Cache-Control' header may include a directory that caching, like 'public' with 'max-age' > 0
+
+Exploiting static extension cache rules:
+- Path mapping discrepancies: different between Traditional url and RESTful url
++ http://example.com/path/in/filesystem/resource.html
++ http://example.com/path/resource/param1/param2
+- Exploiting path mapping discrepancies
+- Delimiter discrepancies:
++ /my-account;example.css (Test Java Spring)
++ /my-account.ico (Test Ruby on Rails)
++ /my-account%00.js (Test OpenLiteSpeed)
++ /my-account/non-existent.jpg (Test Path Mapping cơ bản)
+- Delimiter decoding discrepancies:
++ Case 1: /profile%23wcd.css
+    Origin server: decode %23 -> #, return /profile
+    Cache: .css so cache
++ Case 2: /myaccount%3fwcd.css
+    Cache server: .css so cache
+    Server: decode %3 -> ?, return /myaccount
+
+Exploiting static directory cache rules:
+- Normalization discrepancies
+- Detecting normalization by the origin server
+- Detecting normalization by the cache server
+- Exploiting normalization by the origin server: 
++ /<static-directory-prefix>/..%2f<dynamic-path>
+- Exploiting normalization by the cache server:
++ /<dynamic-path>%2f%2e%2e%2f<static-directory-prefix>
+
+Exploiting file name cache rules:
+- Detecting normalization discrepancies
+- Exploiting normalization discrepancies
+
+
+01_Exploiting_path_mapping_for_web_cache_deception
+- Sent vuln cache link to target -> Wait for target click it -> After that go to that path and get sensitive data
+- Description:
++ We can check if it is possible to vuln cache by sending 2 request with same static file after endpoint
++ If X-Cache is hit, it is possible, else if is miss, it is impossible
++ Then sent carlos vuln request using exploit server, wait for him to click that
++ Because of max-age=30, it will expire after 30s, so we will check url path before it expired
++ Then just get API key
+
+02_Exploiting_path_delimiters_for_web_cache_deception
+- Sent vuln cache link to target -> Wait for target click it -> After that go to that path and get sensitive data
+- Description:
++ First we need to find delimiter that vuln to web and depend on what browser target user using
++ Then just use it and sent vuln url to target, wait for him to click
++ Then check url path before it expired and get API key
+
+03_Exploiting_origin_server_normalization_for_web_cache_deception
+- Sent vuln cache link to target -> Wait for target click it -> After that go to that path and get sensitive data
+- Description:
++ Category: Detecting normalization by the origin server
++ Like previous lab, but we must start path by static url, then .. to go back
+    /resources/..%2fmy-account
++ Just with that additional condition, we can easily get target api key
++ Note: Idk why but in python request, i can't get the cache, so need interactive code, we can just click the url, and paste the target api_key here
+
+04_Exploiting_cache_server_normalization_for_web_cache_deception
+- Sent vuln cache link to target -> Wait for target click it -> After that go to that path and get sensitive data
+- Description:
++ Just like previous lab, but it's success to get cache file
+    /my-account%23%2f%2e%2e%2fresources
+
+05_Exploiting_exact_match_cache_rules_for_web_cache_deception
+- Sent vuln cache link to target -> Wait for target click it -> After that go to that path and get sensitive data
+- Description:
++ This is really interesting lab, using special technique
++ Sent vuln link -> Get admin csrf in cache page -> Using that csrf in vuln link and sent back to validata request
++ More info in code
+
+
+How to prevent:
+- Always use Cache-Control headers to mark dynamic resources, set with the directives no-store and private.
+- Configure your CDN settings so that your caching rules don't override the Cache-Control header.
+- Activate any protection that your CDN has against web cache deception attacks. Many CDNs enable you to set a cache rule that verifies that the response Content-Type matches the request's URL file extension. For example, Cloudflare's Cache Deception Armor.
+- Verify that there aren't any discrepancies between how the origin server and the cache interpret URL paths.
