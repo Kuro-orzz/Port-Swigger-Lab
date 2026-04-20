@@ -1,0 +1,91 @@
+Server-side request forgery (SSRF)
+- Often exploit trust relationships to escalate an attack from the vulnerable application and perform unauthorized actions
+- https://portswigger.net/web-security/ssrf/url-validation-bypass-cheat-sheet
+
+Common SSRF attacks:
+- SSRF attacks against the server:
++ Cause application make an HTTP request back to the server, via loopback network interface
++ Supplying a URL 127.0.0.1 (reversed IP point to the loopback adapter)
++ Why it work:
+    The access control might implemented and sit front of the application server, when made connection back to server, the check is bypassed
+    For disaster recovery purposes, might allow admin access without logging or any user in local machine
+        This provide a way for admin to recover system if they lose their credentials
+    The admin interface might listen on different port to the main application, might not be reachable directly by users
+- SSRF attacks against other back-end systems:
++ Some cases, application server interact with BE system that are not directly reachable by users
++ These systems often have non-routable private IP addresses.
++ BE system are protected by network topology
++ Internal BE system can be accessed without authentication by anyone who is able to interact with systems
+
+Circumventing common SSRF defenses:
+- SSRF with blacklist-based input filters
++ Blocked 127.0.0.1 and localhost and sensitive url /admin
+    Alternative for 127.0.0.1: localhost, 2130706433(decimal), 017700000001(octal), 127.1, 127.0.1,....
+    http or https to bypass
+- SSRF with whitelist-based input filters:
++ Only allow input match whitelist, may look for match at the beginning or contain it
+    https://expected-host:fakepassword@evil-host
+    https://evil-host#expected-host
+    https://expected-host.evil-host
+- Bypassing SSRF filters via open redirection:
++ User submitted url is strictly validated to prevent malicious SSRF exploit
++ However, application contain an open redirection vulnerability
+    /product/nextProduct?currentProductId=6&path=http://evil-user.net
+
+Blind SSRF vulnerabilities:
+- Detect by using out-of-band (OAST) techniques
++ Can blindly sweep the internal IP address space, sending payloads designed to detect well-known vulnerabilities
++ If those payloads also employ blind out-of-band techniques, then you might uncover a critical vulnerability on an unpatched internal server
+
+Finding hidden attack surface for SSRF vulnerabilities:
+- Partial URLs in requests:
++ Instead of place full api query, web only show part of url
++ Then incorporated server-side into a full URL that is requested.
++ It's hard because you do not control the entire URL that gets requested.
+- URLs within data formats:
++ Some data format allow include url that might get requested by the data parser for the format
++ Example: XML data format, might be vuln to XXE injection, might also be vuln to SSRF
+- SSRF via the Referer header:
++ Some applications use server-side analytics software to tracks visitors
++ It often logs Referer header in request, and visit site to track information
++ When it's running, can cause attack surface for SSRF
+
+
+01_Basic_SSRF_against_the_local_server
+- Find api endpoint that request back to server -> Change url -> delete target account
+- Description:
++ Just find api that call back to server, change it to localhost and delete target user
+
+02_Basic_SSRF_against_another_back_end_system
+- Find api endpoint that request back to server -> Change url -> delete target account
+- Description:
++ Like previous lab, but in this we don't know which IP contain admin interface, so just brutedorce it
+
+03_Blind_SSRF_with_out_of_band_detection
+- Find api endpoint that request back to server -> Change url -> delete target account
+- Description:
++ We can use out-of-band techniques to causing dns look up
++ Just change header referer to attacker domain, then send request to solve
++ This lab only allow to use burp collaborator, but you can use random name
++ In real world, you can use web-hook or interact.sh for replacement
+
+04_SSRF_with_blacklist_based_input_filter
+- Find api endpoint that request back to server -> Change url -> delete target account
+- Description:
++ In this lab, 127.0.0.1 and localhost is blacklist, so we use 127.1 to Alternative
++ Same as /admin, we encode character 'a' to bypass
+    burp suite: /%2561dmin
+    python code: /%61dmin
+
+05_SSRF_with_filter_bypass_via_open_redirection_vulnerability
+- Find api endpoint that request back to server -> Change url -> delete target account
+- Description:
++ We can use vulnerabilities param path to redirect url to vuln api endpoint
+
+
+07_SSRF_with_whitelist_based_input_filter
+- Find api endpoint that request back to server -> Change url -> delete target account
+- Description:
++ A little trickier, need both encode, # and @
+    http://localhost%23@stock.weliketoshop.net:8080
++ First we trick it think this a valid url by @stock..., then add # before it but in encoded from

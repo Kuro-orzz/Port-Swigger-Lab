@@ -1,3 +1,36 @@
+API recon
+API documentation:
+- Discovering API documentation
+- Using machine-readable documentation
+Identifying API endpoints:
+- Interacting with API endpoints
+    GET, POST, DELETE, PATCH, OPTIONS
+- Using Intruder to find hidden endpoints
+Finding hidden parameters:
+- Identifying hidden parameters
+- Testing mass assignment vulnerabilities
+
+Server-side parameter pollution:
+- It occurs when web embeds user input in a server-side request to an internal API without adequate encoding.
++ Override existing parameters.
++ Modify the application behavior.
++ Access unauthorized data.
+
+Testing for server-side parameter pollution in the query string:
+- Truncating query strings: using &, #, =
+    ?name=peter%23foo&back=/home
+    ?name=peter#foo&publicProfile=true
+- Injecting invalid parameters:
+    ?name=peter%26foo=xyz&back=/home
+    ?name=peter&foo=xyz&publicProfile=true
+- Injecting valid parameters:
+    +  Add a second valid parameter
+    ?name=peter%26email=foo&back=/home
+    ?name=peter&email=foo&publicProfile=true
+- Overriding existing parameters:
+    ?name=peter%26name=carlos&back=/home
+    ?name=peter&name=carlos&publicProfile=true
+
 01_Exploiting_an_API_endpoint_using_documentation
 - Check API path -> Delete user using API
 - Description:

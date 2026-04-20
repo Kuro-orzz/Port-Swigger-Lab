@@ -7,11 +7,11 @@ Done:
 - SQL injection: 17/18 (1 lab need burp suite professional)
 - OS Command injection: 4/5    (1 lab need burp suite professional)
 - NoSQL injection: 4/4
+- Server-side request forgery (SSRF): 6/7 (1 lab need burp suite professional)
 
 In Progress:
 - File upload vulnerabilities: 6/7 (1 lab need to learn race condition first)
 - Business logic vulnerabilities: 3/11
 - Race conditions: 0/6
-- Server-side request forgery (SSRF): 0/7
 - XXE injection: 0/9
 - API testing: 3/5

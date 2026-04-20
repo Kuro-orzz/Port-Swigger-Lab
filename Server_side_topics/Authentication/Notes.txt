@@ -1,3 +1,32 @@
+Authentication:
+- Something you know(password), have(physical object, security token), are(biometrics or pattern behavior)
+- Different between authentication and authorization
+- Vulnerabilities mechanisms in 2 ways:
++ Weak mechanism, fail to adequately protec against brute-force attacks
++ Logic flaws will be bypassed by attacker, called broken authentication
+
+Brute-force attacks:
+- Brute-forcing usernames, passwords
+    + Status codes
+    + Error messages
+    + Response times
+- Flawed brute-force protection
++ Locking IP that have many failed attempt
++ Account loking
++ User rate limiting
+- HTTP basic authentication
+
+Vulnerabilities in multi-factor authentication:
+- Two-factor authentication tokens
+- Bypassing two-factor authentication
+- Brute-forcing 2FA verification codes
+
+Keeping users logged in
+Resetting user passwords:
+- Sending passwords by email
+- Resetting passwords using a URL
+Changing user passwords
+
 01_Username_enumeration_via_different_responses:
 - Bruteforce -> Different length response
 
