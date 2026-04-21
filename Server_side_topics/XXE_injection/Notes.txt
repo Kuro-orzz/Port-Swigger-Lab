@@ -1,0 +1,42 @@
+XML external entity (XXE) injection:
+- Allow attacker to interact or view files with filesystem through XML data
+- Attacker can compromise the underlying server or other BE infracstructure, by leveraging vuln to perform SSRF attacks
+
+XML (extensible markup language):
+- Used for storing and transporting data like html
+- Uses tree structure of tags and data
+- Unlike html, xml does not use predefined tags, so tags can be given names that describe data
+- X in AJAX stand for xml, popular before json format appear
+- DTD: document type definition
++ Declared within the optional DOCTYPE at the start of XML document
++ It can be fully self-contained itself (internal DTD) or can be loaded from elsewhere (external DTD) or can hybrid of two
+- Custom entities:
+    <!DOCTYPE foo [ <!ENTITY myentity "my entity value" > ]>
+    + Any usage of entity &myentity; will be replace with "my entity value"
+- External entities:
+    <!DOCTYPE foo [ <!ENTITY ext SYSTEM "http://normal-website.com" > ]>
+    <!DOCTYPE foo [ <!ENTITY ext SYSTEM "file:///path/to/file" > ]>
+
+Types of XXE attacks:
+- Exploiting XXE to retrieve files: external entity containing the contents of a file and return in application response
++ <!DOCTYPE foo [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+- Exploiting XXE to perform SSRF attacks: external entity is defined based on url to BE system
++ <!DOCTYPE foo [ <!ENTITY xxe SYSTEM "http://internal.vulnerable-website.com/"> ]>
+- Exploiting blind XXE exfiltrate data out-of-band: sensitive data transmitted to attacker server
++ Trigger out-of-band network interaction or trigger xml parsing error in such a way that error message contain sensitive data
+
+- Exploiting blind XXE to retrieve data via error messages: trigger parsing error messages contain sensitive data
+
+
+01_Exploiting_XXE_using_external_entities_to_retrieve_files
+- Find api endpoint using xml data -> Change to vuln XXE external -> Send it and get sensitive data
+- Description:
++ Just extract /etc/passwd by simple line of xml
+    <!DOCTYPE foo [ <!ENTITY xxe SYSTEM "file:///etc/passwd"> ]>
+
+02_Exploiting_XXE_to_perform_SSRF_attacks
+- Find api endpoint using xml data -> Change to vuln XXE external -> Send it and get sensitive data
+- Description:
++ Using payload to trigger error and append it until get sensitive data
+    <!DOCTYPE foo [ <!ENTITY xxe SYSTEM "http://internal.vulnerable-website.com/"> ]>
+    <!DOCTYPE foo [ <!ENTITY xxe SYSTEM "http://169.254.169.254{path}"> ]>

