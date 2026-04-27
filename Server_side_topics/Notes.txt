@@ -8,10 +8,10 @@ Done:
 - OS Command injection: 5/5
 - NoSQL injection: 4/4
 - Server-side request forgery (SSRF): 7/7
+- XXE injection: 9/9
 
 In Progress:
 - File upload vulnerabilities: 6/7 (1 lab need to learn race condition first)
 - Business logic vulnerabilities: 3/11
 - Race conditions: 0/6
-- XXE injection: 2/9
 - API testing: 3/5
