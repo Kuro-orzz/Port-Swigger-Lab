@@ -12,6 +12,6 @@ Done:
 
 In Progress:
 - File upload vulnerabilities: 6/7 (1 lab need to learn race condition first)
-- Business logic vulnerabilities: 3/11
+- Business logic vulnerabilities: 10/12
 - Race conditions: 0/6
-- API testing: 3/5
+- API testing: 4/5

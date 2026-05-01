@@ -17,25 +17,49 @@ Server-side parameter pollution:
 + Access unauthorized data.
 
 Testing for server-side parameter pollution in the query string:
-- Truncating query strings: using &, #, =
-    ?name=peter%23foo&back=/home
-    ?name=peter#foo&publicProfile=true
+- Truncating query strings: using &, #, =, ?
+    Client request: ?name=peter%23foo&back=/home
+    Server request: ?name=peter#foo&publicProfile=true
+    + If server return 'peter' user, request may have been truncated
 - Injecting invalid parameters:
     ?name=peter%26foo=xyz&back=/home
     ?name=peter&foo=xyz&publicProfile=true
+    + If same response, it was successfully injected but ignored by application
 - Injecting valid parameters:
-    +  Add a second valid parameter
+    + If you know a hidden param, add it to query and check response
     ?name=peter%26email=foo&back=/home
     ?name=peter&email=foo&publicProfile=true
 - Overriding existing parameters:
     ?name=peter%26name=carlos&back=/home
     ?name=peter&name=carlos&publicProfile=true
+    + Different behavior between language:
+        PHP: parses last parameter only, search for "carlos"
+        ASP: combine both parameters, search for "peter,carlos"
+        Node.js: parses first parameter, search for "peter"
+
+Testing for server-side parameter pollution in REST paths:
+- Example:
++ GET /edit_profile.php?name=peter%2f..%2fadmin
++ GET /api/private/users/peter/../admin
 
 01_Exploiting_an_API_endpoint_using_documentation
 - Check API path -> Delete user using API
 - Description:
 + Just bruteforce, dirsearch or try hand by hand to find API document
 + This lab has /api path, and information about get, delete, patch is in there path
+
+02_Exploiting_server_side_parameter_pollution_in_a_query_string
+- Sent reset password token -> Get it by truncate query -> Reset admin password -> Delete target account
+- Description:
++ First just send reset token to administrator
++ Then check forgotPassword.js, static file, you will see it contains param named reset_token
++ Try:
+    + Adding %26x=y and check response, if "Parameter is not supported", it means BE decode %26->&
+    + Adding %23 and check response, if "Field not specified", it means BE have been truncated by %23-># and it also have param named Field
+    + Try to find hidden param using Intruder, username and email is email is return 200
+    + Check different response between that, if field=username, it return username and if field=email, it return email
+    + So we can get reset_token by adding field=reset_token
++ Use that to reset admin password, then login and delete target account
 
 03_Finding_and_exploiting_an_unused_API_endpoint
 - Check API path -> using OPTIONS check valid method -> Modify price by PATCH -> Buy it for free now
@@ -56,6 +80,8 @@ Testing for server-side parameter pollution in the query string:
 + Try to use GET request, we get a full param of POST requests
 + With 'chosen_discount' default set to 0
 + Just add it to POST request and fix to 100
+
+05_Exploiting_server_side_parameter_pollution_in_a_REST_URL
 
 
 How to prevent:
