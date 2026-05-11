@@ -1,0 +1,14 @@
+- This closely related to business logic flaw
+- Occur when websites process requests concurrently without adequate safeguards.
+-> Multiple distinct threads interact with same data at same time
+-> "Collision"
+- Period of time during collision is possible known as "race window"
+- Heavily dependent on application
+
+Limit overrun race conditions
+- Called "time-of-check to time-of-use" (TOCTOU) flaws.
+- 
+
+
+
+01_Limit overrun_race_conditions

