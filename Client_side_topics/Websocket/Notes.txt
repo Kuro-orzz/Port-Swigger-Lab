@@ -2,7 +2,7 @@ Web socket:
 - Bi-directional, full duplex communications protocol
 - Used for streaming data and other asynchronous traffic
 - Useful in situations where low-latency or server-initiated messages are required
-- var ws = new WebSocket("wss://normal-website.com/chat");
+- var wss = new WebSocket("wss://normal-website.com/chat");
     + wss protocol established a websocket over an encrypted TLS connection
     + ws protocol uses an unencrypted connection
 
@@ -32,6 +32,12 @@ WebSockets security vulnerabilities:
         + Analysis handshake (only use cookie to validate session)
         + Redirect victim to attacker's website
         + Perform unauthorized actions
+
+How to secure a WebSocket connection:
+- Use wss:// protocol (WebSocket over TLS)
+- Hard code the URL of the WebSockets endpoint, and certainly don't incorporate user-controllable data into this URL.
+- Protect the WebSocket handshake message against CSRF, to avoid cross-site WebSockets hijacking vulnerabilities.
+- Treat data received via the WebSocket as untrusted in both directions. Handle data safely on both the server and client ends, to prevent input-based vulnerabilities such as SQL injection and cross-site scripting.
 
 
 01_Manipulating_WebSocket_messages_to_exploit_vulnerabilities
