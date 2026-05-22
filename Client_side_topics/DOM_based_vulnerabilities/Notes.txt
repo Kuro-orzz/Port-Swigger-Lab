@@ -1,0 +1,23 @@
+DOM (Document Object Model):
+- A web browser's hierachical representation of the element on the page.
+- Can use Javascript to manipulate the nodes and objects of DOM, as well as properties
+- DOM manipulation in itself is not a problem, integral part of how modern website work
+- Vulnerabilities arise when web contain Javascript that take attacker controllable (source), and pass it into a dangerous function (sink)
+
+Taint-flow vulnerabilities:
+- Source: is a Javascript property that accepts data that is potentially attacker-controlled
+    + Example: location.search (read input from query string), document.referer, document.cookie
+- Sink: is a potentially danggerous Javascript function or DOM that can cause undesirable effects if attacker controlled data is pass to it.
+    + Example: eval() because it process the argument that is passed to Javascript
+                document.body.innerHTML
+- Vuln arise when web pass data from a source to sink in unsafe way.
+- Most common source is URL, typically accessed with location object
+    + Attacker can construct a link to send a victim to vuln page with payload in query string
+        goto = location.hash.slice(1)
+        if (goto.startsWith('https:')) {
+            location = goto;
+        }
+        https://www.innocent-website.com/example#https://www.evil-user.net
+    + document.URL, document.documentURI, document.URLUnencoded, document.baseURI, location
+    + document.cookie, document.referrer, window.name, history.pushState, history.replaceState
+    + localStorage, sessionStorage, IndexedDB (mozIndexedDB, webkitIndexedDB, msIndexedDB), Database

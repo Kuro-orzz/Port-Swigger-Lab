@@ -3,9 +3,9 @@ Client-side-topic
 Done:
 - Cross-origin resource sharing (CORS): 3/3
 - Cross-site request forgery (CSRF): 12/12
+- Web Sockets: 3/3
+- Clickjacking: 5/5
 
 In Progress:
 - Cross-site scripting (XSS): 9/30
-- Clickjacking: 0/5
 - DOM-based vulnerabilities: 0/7
-- Web Sockets: 0/3
