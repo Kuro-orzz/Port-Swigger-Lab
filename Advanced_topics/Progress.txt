@@ -1,0 +1,16 @@
+Server-side topic
+
+Done:
+- Insecure deserialization: 10/10
+
+In Progress:
+- Web LLM attack: 0/7
+- GraphQL API vulnerabilities: 0/5
+- Server-side template injection: 0/7
+- Web cache poisoning: 0/13
+- HTTP Host header attacks: 0/7
+- HTTP request smuggling: 0/22
+- OAuth authentication: 0/6
+- JWT attacks: 0/8
+- Prototype pollution: 0/10
+- Essential skills: 0/2

