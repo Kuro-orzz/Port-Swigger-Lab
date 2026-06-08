@@ -2,10 +2,10 @@ Server-side topic
 
 Done:
 - Insecure deserialization: 10/10
+- GraphQL API vulnerabilities: 5/5
 
 In Progress:
 - Web LLM attack: 0/7
-- GraphQL API vulnerabilities: 0/5
 - Server-side template injection: 0/7
 - Web cache poisoning: 0/13
 - HTTP Host header attacks: 0/7

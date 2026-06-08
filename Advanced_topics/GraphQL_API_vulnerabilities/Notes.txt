@@ -1,0 +1,201 @@
+https://portswigger.net/web-security/graphql/what-is-graphql
+
+GraphQL vulnerabilities:
+- Arise due to implementation and design flaw
+- Example: introspection feature may be left active, enabling attackers to query API to glean information about its schema
+
+Finding GraphQL endpoints:
+- Universal queries:
+    + If send query{__typename}, response will include {"data": {"__typename": "query"}}
+    + It work because every graphql has a reserved field called __typename return object as string
+- Common endpoint names:
+    + /graphql
+    + /api
+    + /api/graphql
+    + /graphql/api
+    + /graphql/graphql
+    + if these not work, append /v1 to path
+    + Note: graphql services often response to any non-GraphQL with a "query not present" or similar error
+- Request methods:
+    + Should only accept POST method have content-type application/json
+    + Some endpoint may accept alternative GET method or POST that use content-type of x-www-form-urlencoded
+- Initial testing
+
+Exploiting unsanitized arguments
+Discovering schema information:
+- Best way to do is using introspection queries, query for information about schema
+- Using introspection:
+    + { "query": "{__schema{queryType{name}}}" }: return names of all available queries
+    + Full introspection: returns full details on all queries, mutations, subscriptions, types, and fragments.
+
+    query IntrospectionQuery {
+        __schema {
+            queryType {
+                name
+            }
+            mutationType {
+                name
+            }
+            subscriptionType {
+                name
+            }
+            types {
+             ...FullType
+            }
+            directives {
+                name
+                description
+                args {
+                    ...InputValue
+            }
+            onOperation  #Often needs to be deleted to run query
+            onFragment   #Often needs to be deleted to run query
+            onField      #Often needs to be deleted to run query
+            }
+        }
+    }
+
+    fragment FullType on __Type {
+        kind
+        name
+        description
+        fields(includeDeprecated: true) {
+            name
+            description
+            args {
+                ...InputValue
+            }
+            type {
+                ...TypeRef
+            }
+            isDeprecated
+            deprecationReason
+        }
+        inputFields {
+            ...InputValue
+        }
+        interfaces {
+            ...TypeRef
+        }
+        enumValues(includeDeprecated: true) {
+            name
+            description
+            isDeprecated
+            deprecationReason
+        }
+        possibleTypes {
+            ...TypeRef
+        }
+    }
+
+    fragment InputValue on __InputValue {
+        name
+        description
+        type {
+            ...TypeRef
+        }
+        defaultValue
+    }
+
+    fragment TypeRef on __Type {
+        kind
+        name
+        ofType {
+            kind
+            name
+            ofType {
+                kind
+                name
+                ofType {
+                    kind
+                    name
+                }
+            }
+        }
+    }
+
+    + Note: if query doesn't run, remove onOperation, onFragment, onField from the query
+
+- Visualizing introspection results: https://nathanrandal.com/graphql-visualizer/
+- Suggestions:
+    + Feature of Apollo GrapQL can suggest query amendments in error messages
+    + Example: There is no entry for 'productInfo'. Did you mean 'productInformation' instead?
+    + Tool: https://github.com/nikitastupin/clairvoyance
+    + Note: in Apollo Server >= v4, can disable using hideSchemaDetailsFromClientErrors option.
+
+Bypassing GraphQL introspection defenses:
+- Technique 1: insert a special character after __schema keyword
+    + When dev disable introspection, they use regex to exclude __schema in queries
+        Example: if "__schema{" in query -> block
+    + Insert endline { "query": "query{__schema\n{queryType{name}}}" } -> bypass
+    + Some special char: spaces, new lines, commas,...
+- Technique 2: change to GET method
+    + As introspection may only disable over POST method
+    + Try a GET request, or a POST request with a content-type of x-www-form-urlencoded
+    + Example: GET /graphql?query=query%7B__schema%0A%7BqueryType%7Bname%7D%7D%7D
+
+Bypassing rate limiting using aliases:
+- Ordinarily, GraphQL objects can't contain multiple properties with same name
+- Aliases enable to bypass restriction by explicity naming properties you want API return
+- Example:
+    + Invalid: Same name
+        query {
+            getUser(id: 1) { username }
+            getUser(id: 2) { username }
+        }
+    + Valid: Aliases
+        query {
+            user1: getUser(id: 1) { username }
+            user2: getUser(id: 2) { username }
+        }
+- Some rate limit work based on the number of HTTP requests received rather than number of operations performed on the endpoint
+    + Without alias, 100 try need 100 HTTP request
+    + With alias, 100 try may need only 1 HTTP request
+
+GraphQL CSRF:
+- This can be used as a vector for CSRF attack
+- When vulnerabilities arise: accept GET request or POST with content-type x-www-form-urlencoded or not contain CSRF token
+- application/json is safe, because this is a non-simple request so blocked by CORS
+
+
+01_Accessing_private_GraphQL_posts
+- Using full Introspection Query
+    + Put response to http://nathanrandal.com/graphql-visualizer/
+    + You will see field postPassword in BlogPost
+- Add field postPassword to query
+- Bruteforce untill postPassword != null
+
+02_Accidental_exposure_of_private_GraphQL_fields
+- Like previous lab, we can query for full field data and put it to graphql visualizer
+- You will see a table user contain id, username, password field
+- Depend on that, try to getUser information by id
+- Username and password can get because of that IDOR vuln
+
+03_Finding_a_hidden_GraphQL_endpoint
+- Using burp intruder to bruteforce api endpoint
+    + You will get status code 400 with endpoint /api and message "Query not present"
+    + Note: turn off url encoding in burp intruder
+- Try to bypass introspection defense:
+    + Using GET method, ?query= 
+    + Keep all and send, will get {"error":"Request path too long"}
+    + Shorten it and get message "GraphQL introspection is not allowed, but the query contained __schema or __type"
+    + Add \n after __schema to bypass
+    + Payload:
+{__schema\n{queryType{name}mutationType{name}subscriptionType{name}types{kind name description fields(includeDeprecated:true){name description args{name description type{kind name ofType{kind name ofType{kind name ofType{kind name}}}}defaultValue}type{kind name ofType{kind name ofType{kind name ofType{kind name}}}}isDeprecated deprecationReason}inputFields{name description type{kind name ofType{kind name ofType{kind name ofType{kind name}}}}defaultValue}interfaces{kind name ofType{kind name ofType{kind name ofType{kind name}}}}enumValues(includeDeprecated:true){name description isDeprecated deprecationReason}possibleTypes{kind name ofType{kind name ofType{kind name ofType{kind name}}}}}directives{name description args{name description type{kind name ofType{kind name ofType{kind name ofType{kind name}}}}defaultValue}}}}
+- After get response of that payload, right click response, and click "Save Graphql queries to site map"
+- Go to Target > Site map, we will see query=mutation and query=query
+    + When sending query=query with variables=3, we will get information of carlos
+    + When sending query=mutation, it will delete user with id in variables
+    + So we can delete carlos with query=mutation, variables=3
+
+04_Bypassing_GraphQL_brute_force_protections
+- To bypass rate limit restriction, combine all password in 1 request using alias
+- Send that payload to website, it will return list of token and success status
+- Just using that token or password to login as usual
+
+05_Performing_CSRF_exploits_over_GraphQL
+- In change email endpoint
+    + Change content-type to x-www-form-urlencoded
+    + Change json payload to param
+- Use https://csrfshark.github.io/app/ to generate payload
+- Send that payload construct to exploit server
