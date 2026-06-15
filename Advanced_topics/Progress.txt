@@ -5,8 +5,8 @@ Done:
 - GraphQL API vulnerabilities: 5/5
 
 In Progress:
+- Server-side template injection: 5/7
 - Web LLM attack: 0/7
-- Server-side template injection: 0/7
 - Web cache poisoning: 0/13
 - HTTP Host header attacks: 0/7
 - HTTP request smuggling: 0/22

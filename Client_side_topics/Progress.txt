@@ -7,5 +7,5 @@ Done:
 - Clickjacking: 5/5
 
 In Progress:
-- Cross-site scripting (XSS): 9/30
+- Cross-site scripting (XSS): 28/30
 - DOM-based vulnerabilities: 0/7
