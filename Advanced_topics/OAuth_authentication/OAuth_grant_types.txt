@@ -1,0 +1,77 @@
+OAuth grant types:
+- Determines exact sequence of steps involved in OAuth process
+- Also affect how client app communicates with each stage, include how access token is sent
+- Often refered to as "OAuth flows"
+
+
+OAuth scopes:
+    + Client app has to specify which data can access, and what operations can perform, using 'scope' param of authorization request and send it to OAuth service
+    + Name of scope just an arbitrary text string, so format can different between providers
+
+
+Authorization code grant type
+    
+1. Authorization request
+    GET /auth?client_id=12345&redirect_uri=https://client-app.com/callback&response_type=code&scope=openid%20profile&state=ae13d489bd00e3c24
+- You can identify endpoint based on parameters used in request
+- Parameters:
+    + client_id: unique identifier of client app, generated when registers with OAuth service
+    + redirect_uri: aka callack uri or callback endpoint
+    + response_type: determines which kind of response client app expecting and which flow 
+    + scope: which subset of user's data want to access
+    + state: store unique, unguessable value, return in response along with authorization code. Serve as form of CSRF token to make sure /callback endpoint is from same person who initiated  OAuth floe
+
+2. User login and consent
+- When authorization server receive the init request, it redirect user to login page
+- Then be presented with a list of data that client app want to access (base on scope defined)
+
+3. Authorization code grant
+- If user consent request access, browser will redirect to /callback endpoint that specified in redirect_uri
+- The result GET will contain authorization code and may also state param
+    GET /callback?code=a1b2c3d4e5f6g7h8&state=ae13d489bd00e3c24
+
+4. Access token request
+- After receive authorization code, it need to exchange for access_token
+- To do this, it sends server-to-server POST request to /token endpoint
+    POST /token
+    client_id=12345&client_secret=SECRET&redirect_uri=https://client-app.com/callback&grant_type=authorization_code&code=a1b2c3d4e5f6g7h8    
+    + client_secret: client app authenticate itself by include secret key that assigned when register with OAuth service
+    + grant_type: used to make sure new endpoint which grant type the client app want to use
+- All communication from this point takes place in secure back-channel, usually be observed to controlled by attacker
+
+5. Access token grant
+
+6. API call
+- Now client app has access code, it can fetch user's data from resource server.
+
+7. Resource grant
+- Resource server should verify that token is valid and it belong to current client app
+- If so, it will response by sending request resource, the user's data based on scope of access token
+
+
+
+Implicit grant type
+- Simpler than Authorization code
+    + Rather than obtain code and exchanging for access token, client reveives access token immediately after giving their consent
+- This is less secure and less app use this than authorization code
+    + Because all comminication happen via browser redirect
+    + Mean that sensitive access token and user's data are more exposed to potential attacks
+- Suited to single-page applications and native desktop applications
+    + Which can not easily store client_secret on BE
+    + And not benifit as much from authorization code grant type
+
+
+1. Authorization request
+GET /auth?client_id=id&redirect_uri=url&....
+
+2. User login and consent
+- User log in and decide to consent request permissionor not
+
+3. Access token grant
+- Accept consent -> Redirect browser to redirect_uri
+GET /callback#access_token=....&token_type=...&expires_in=......
+- Access token is in URL fragment, never sent directly to client app
+
+4. API call
+
+5. Resource grant

@@ -1,0 +1,99 @@
+https://portswigger.net/web-security/oauth/openid
+
+
+OpenID Connect
+- A dedicated identity and authentication layer built on top of OAuth
+- Why need:
+    + OAuth was not designed for authentication, it was intended to delegating authorization for specific resources between applications
+    + Many web still request basic user data -> if access granted -> assume user already authenticated by OAuth provider
+- Problem:
+    + Client app has no way of knowing when, where, how the user was authenticated
+    + No standard way to request user data  (These implement was a custom workaround)
+    + To support OAuth, client app would have to config separate mechanism for each provider, each with different endpoints, unique sets of scope,...
+- OpenID fixes this:
+    + Adding standardized, identity-related features
+    + Make authentication work more reliable, uniform way
+
+
+How it work:
+- Key different is additional, standardized set of scopes that are same for all providers, extra response type: id_token
+- OpenID Connect roles:
+    + Relying party: application that request authentication of user (client application)
+    + End user: who being authenticated (resource owner)
+    + OpenID provider: OAuth service that is config to support OpenID Connect
+- OpenID Connect claims and scopes:
+    + Claims refers to the key:value pairs information about user on resource server
+        + Example: "family_name":"Montoya"
+    + Basic OAuth: scopes are unique to each provider
+    + OpenID Connect: use an identical set of scopes
+    + To use it, client app must specify scope openid in authorization request
+        + Can include one or more of the other standard scopes: profile, email, address, phone
+        + Example: scope=openid email profile
+- ID token:
+    + Return JSON web token (JWT) signed with JSON Web signature (JWS)
+    + JWT payload: contain list of claims based on scope requested and information about how and when user was last authenticated by OAuth service
+    + Benefit:
+        + Reduced number of requests that need to be sent -> better performance
+        + Instead of get access_token and user data separately, ID token already contain it
+        + Sent to client app immediately after user authenticated themselves
+        + Integrity:
+            + Basic OAuth: based on trusted channel
+            + ID token: based on JWT cryptographic signature -> protect against MITM attacks
+    + Drawback: 
+        + Cryptographic keys on signature verification transmitted over same network channel
+        + Exposed on /.well-known/jwks.json -> some attacks are still possible (like MITM)
+    + OAuth support multiple response types, accept request with both basic OAuth response and OpenID Connect response
+        + Example: response_type=id_token token
+
+Identifying OpenID Connect:
+- Best way to check is look for openid in scope param
+- Even login process does not appear to be using OpenID Connect, still worth checking whether OAuth service support it
+    + Simply try adding openid scope or changing response type to id_token, checking whether result in error
+    + Success: support OpenID Connect
+    + Error: not supported
+- Take a look at document to find useful information
+    + May be able to access config file from standard endpoint /.well-known/openid-configuration
+
+OpenID Connect vulnerabilities: (2)
+- The implement is much stricter than basic OAuth, which mean there less potential vuln
+- But it also just a layer on top of OAuth, still be vuln to some OAuth based attacks
+- Unprotected dynamic client registration:
+    + If dynamic client registration is supported, client app can register by itself
+    + Sending POST method to endpoint /register. In request body, contain key information in JSON format
+    + Example:
+        POST /openid/register HTTP/1.1
+        Content-Type: application/json
+        Accept: application/json
+        Host: oauth-authorization-server.com
+        Authorization: Bearer ab12cd34ef56gh89
+
+        {
+            "application_type": "web",
+            "redirect_uris": [
+                "https://client-app.com/callback",
+                "https://client-app.com/callback2"
+                ],
+            "client_name": "My Application",
+            "logo_uri": "https://client-app.com/logo.png",
+            "token_endpoint_auth_method": "client_secret_basic",
+            "jwks_uri": "https://client-app.com/my_public_keys.jwks",
+            "userinfo_encrypted_response_alg": "RSA1_5",
+            "userinfo_encrypted_response_enc": "A128CBC-HS256",
+            …
+        }
+    + OpenID provider should require client app authenticate itself (like using bearer token)
+    + However, some will allow without authentication -> enable attacker register their own malicious client app
+    + Impact:
+        + Some of these property provided as URIs
+        + If any accessed by OpenID provider (fetch by itself) -> second-order SSRF
+- Allowing authorization requests by reference:
+    + Standard way: submit params via query string
+    + Some OpenID allow submit via JWT (as a option): can send a single request_uri param pointing to JWT (already contain the rest of OAuth param and their values)
+    + Risk 1: Depend on configuration, request_uri can be another potential vector for SSRF
+    + Risk 2: Validation bypass
+        + Some servers may validate param in authorization request
+        + But may not apply same validation to params in JWT
+        -> Different in validate params (query string and decode JWT)
+    + Check if option is supported:
+        + Look at request_uri_parameter_supported option in config file and document
+        + Try adding request_uri param to see if it work (Note: some servers support even if they don't explicitly mention in their document)
