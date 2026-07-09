@@ -1,0 +1,292 @@
+https://portswigger.net/research/cracking-the-lens-targeting-https-hidden-attack-surface
+
+
+Modern websites are browsed through a lens of transparent systems built to enhance performance, extract analytics and supply numerous additional services. This almost invisible attack surface has been largely overlooked for years.
+
+
+Introduction
+- Some vuln techniques: ShellShock, StageFright, ImageTragick
+- The discovery of a serious vuln in an overlooked chunk of attack surface is often followed by numerous similar issues
+    + Partly due to lack of security hardening ("softness") in any significant attack surface that escape attention from security testers
+- About rich attack surface offered by reverse proxies, load balancers, BE analytics systems has been unduly overlooked for years
+    + Describe a simple methodology for efficiently auditing such systems at scale
+    + Showcase a selection of the numerous critical vuln it found
+- Tools:
+    + Collaborator Everywhere: Burp Suite extension that automatically inject some less harmful payloads into web traffic
+        https://github.com/PortSwigger/collaborator-everywhere
+    + Rendering Engine Hackability Probe: web page that analyzes the attack surface of connecting client
+        https://github.com/PortSwigger/hackability
+        https://portswigger-labs.net/hackability/
+
+
+Methodology
+- Listening:
+    + Require targeting system that were designed to be invisible
+        + Load balancer that's obvious is one that's failing at its job
+        + BE analytics system would prefer users not know about its existance
+    + Can't rely on analyze response content to identify vuln
+        + Instead, send payload designed to make these systems contact us, and learn from result DNS lookups and HTTP request
+        + All finding presented in this paper started with a pingback
+        + None of these vuln and systems would have been found without one
+    + Can record requests using Burp Collaborator or host your own logging DNS server, or basic probing Canarytokens (https://canarytokens.org/nest/)
+- Research pipeline:
+    + Start by using Burp match/replace rule to inject hard-coded pingback payload into browser traffic -> Fail because:
+        + Many pingback make that difficult to know which web triggered it
+        + It also soon apparent some payload would cause pingback after time delay - 3 min, several hours or every 24 hours
+    + Solution: Collaborator Everywhere, inject payload contain unique identifiers into all proxied traffic, use these to auto correlate pingback with corresponding attacks
+- Scaling up:
+    + Collaborator Everywhere is highly effective for focused, manually driven audits and roughly half the vulnerabilities disclosed in this paper were found using it.
+    + Try apply in Yahoo:
+        + Only 30% chance of found on any given scan
+        + Root cause: using DNS round-robin load balancing through 3 FE servers, and only 1 of these was vuln
+    + To ensure no vuln escape detection, it's necessary to identify and direct payload at every piece of target's infrastructure
+    + Solution: Combine Burp collaborator with a Masscan (port scanner) or ultimately with ZMap/ZGrab (supports HTTP/1.1 and HTTPS, can send request payload)
+        + Correlate pingback with targets: prefixed each payload with hostname
+            example.com.collaboratorid.burpcollaborator.net
+        + Target domain and IP were obtained by manually building a list of legally domain from public and private bug bounty program, and mapping to Rapid7's Project Sonar Forward DNS database (DB of domain -> IP)
+        + Result: identified a few million IP, about 50000 listening on port 80/443
+        + Note: when try to use reverse DNS records, realize this revealed a number of servers belong to Google's infrastructure that wouldn't be happy about being subjected to a surprise security audit (so don't do this)
+    + But sending payload can't detect vuln if they never hit vuln code path. To maximize coverage:
+        + Used up to 5 hostnames per IP, used both HTTP and HTTPS
+        + Trigger edge cases using X-Forwarded-Proto: HTTPS (original connection is HTTPS) and Max-Forwards (limit number of routing proxy that request go through)
+        + Sent Cache-Control: no-transform header to discourage intermediate servers from mangling payloads (not allow proxy to change the payload)
+    + In short:
+        HackerOne + BugCrowd -> Suitable target spreadsheet -> Scope Regex
+        Project Sonar -> DNS database
+        Scope Regex + DNS Database -> 3 mil hosts -> 50k webservers -> Send payload
+
+
+Misrouting requests:
+- Reverse proxy:
+    + Sit in privileged network position, directly receiving requests from internet and have access to company's DMZ
+    + With suitable payload, may manipulated request to destination of attacker's choice
+    + Like SSRF, normal request -> public app, malicious request -> internal app
+    + Note: attack typically involve highly malformed request which may break tools, and inadvertently exploit intermediate gateways belong to your company or ISP
+    + Tool recommend: Burp Suite, mitmproxy, Ncat/OpenSSL
+- Invalid host:
+    + Simplest way to trigger callback is send incorrect host header to attacker's server
+    + Some evident of success exploit using this technique: 27 DoD servers, author ISP, Columnbian ISP (DNS poisoning by accident), http://ats-vm.lorax.bf1.yahoo.com/
+    + Analysis vuln in http://ats-vm.lorax.bf1.yahoo.com/:
+        + Send GET / HTTP/1.1, receive a response for each line of request
+        -> It was using newline-terminated protocol (difficult or impossible via classic SSRF)
+        + Change to HELP / HTTP/1.1, receive way of how to interact with it
+            Traffic Server Overseer Port
+            commands:
+                get <variable-list>
+                set <variable-name> = "<value>"
+                help
+                exit
+        -> Overseer Port of Apache Traffic Server, load balance/cache of Yahoo
+        -> Allow get, set for config 
+        + So author think about adding "get <var>" as a content of GET request
+        + Possible exploit:
+            + Enabling SOCKS proxying
+            + Granting IP address permission to push items into their cache
+- Investigating intent - BT (British Telecom):
+    + Author notice pingback arriving from some IP for payload sent to completely unrelated companies
+        + At first, initial assump that these companies must using the same WAF solution, and think about trick them into misrouting request to their internal admin interface
+        + But notice pingback from Kent, UK for payload sent to Russia is hardly expected behavior
+    + Using Burp Repeater, noticed response come back in 50ms:
+        + Suspicious fast for request going from England -> Russia -> server in Ireland -> England -> Russia
+            + Mean that it wasn't actually reaching Russia, block somewhere in the path
+        + TCP traceroute port 80 reveal the truth:
+            + England -> Proxy of BT -> Terminate connect to cloud.mail.ru
+    + Notice only port 80 is block, port 443 is left untampered
+        -> Entity tampering doesn't control TLS cert for mail.ru
+    + Could replicate this behavior both in office, home and any client of BT
+    + To know the system true purpose:
+        + Use Masscan to ping port 80 across entire IPv4 address space using TTL = 10 (time to live - max hop allowed)
+            -> Scan entire internet to map which IP is redirected
+        + Next filter out caches and self-hosted web, complete list of target IP address
+        + Sampling revealed that system used to block access to copyrighted content
+    + How it works:
+        + Traffic to blacklist IP was rerouted into BT proxy pool
+        + Proxies inspect HTTP Host header
+        + If Host header also blacklisted, block request with msg
+            <p>Access to the websites listed on this page has been blocked pursuant to orders of the high court.</p>
+        + Note: Request with IP in blacklist will be rerouted to proxy, then check Host header, if header is also in blacklist -> block request
+    + Possible to bypass this block without changing host header (exercise for reader)
+    + Notable consequences:
+        + Many web share IP through virtual hosting ended up on blacklist (such as Google Sites) -> all BT's users will be rerouted to proxy pool to check Host header
+        + If can compromise proxy's admin panel, could reconfigure proxy to inject malicious content into traffic of million BT's customer
+    + BT's staff share that: system originally constructed as part of CleanFeed, a government initiative to block access to images of child abuse, later repurposed to target copyright abuse
+- Investigating intent - METROTEL (Colombian ISP):
+    + Similar behavior as BT
+    + Rapid7's Project Sonar used a public METROTEL DNS server
+        + Which was selectively poisoning results for certain domain
+        + Redirect traffic into its proxy for DPI (Deep Packet Inspection)
+    + Bypass HTTPS cert errors when sniff packet:
+        + Sniffed intended remote host from SNI (Server-Name Indicator) field
+        + Pass through HTTPS traffic without causing cert validation errors
+    + After author reported, they confirm the misbehavior of DNS server
+    + Next, author feed Alexa top 1 million domain list into it and identify targeted hosts
+    + Target content:
+        + Various image and video hosts
+        + Some lesser known social network
+        + Also poisoned to certain news website (include bbc.co.uk)
+    + It redirect to http://internetsano.metrotel.net.co/ (this web was blocked for contain images of child abuse)
+- Handling input permutation:
+    + Remember that it's almost impossible to predict all behavior of request
+    + Example: Send request GET / and receive response:
+        GET /{Host header in request}/{Host header in request}
+        Host outage.<Host header in request>
+        + Look like it doesn't look promising exploit, as internal server are unlikely to host sensitive content at the path
+    + Should:
+        + Handle unexpected activity by using wildcard DNS, wildcard SSL, multiple protocol
+        + Register outage.yourdomain.com, make it resolve to internal IP address
+        + Normalize exploit path to send request to internal server
+    + Setup:
+        + Send request with Host header is ../?x=.vcap.me
+            + vcap.me is the same as localhost, always resolve to 127.0.0.1
+            + ../ to normalize the path result in pingback
+        + Result request look like:
+            GET /vcap.me/../?=x=.vcap.me
+            Host: outage.vcap.me
+- Host overriding:
+    + Some server whitelist Host header, but forget request can specify a full url that takes precedence over Host header
+        GET http://internal-website.mil/ HTTP/1.1
+        Host: xxxxxxx.mil
+- Ambiguous requests:
+    + Few web sat behind Incapsula's cloud-based WAF, inspecting Host header to work out which server to forward request to
+    + However, Incapsula's parsing of Host header is extremely tolerant of what specified port to be
+        Host: incapsula-client.net:80@burp-collaborator.net
+    + This revealed the location of BE server, enable to bypass protection by accessing BE directly
+- Breaking expectations:
+    + Sometimes broken request routing aren't always caused by misconfig
+    + Example: code lead to vuln in New Relic's infrastructure
+        Url backendURL = "http://public-backend/";
+        String uri = ctx.getRequest().getRawUri();
+                
+        URI proxyUri;
+        try {
+        proxyUri = new URIBuilder(uri)
+                .setHost(backendURL.getHost())
+                .setPort(backendURL.getPort())
+                .setScheme(backendURL.getScheme())
+                .build();
+        } catch (URISyntaxException e) {
+            Util.sendError(ctx, 400, INVALID_REQUEST_URL);
+            return;
+        }
+        + It takes user-supplied URL, replace domain with hard-coded BE address
+        + Unfortunately Apache HttpComponents server lib fail to require path start with /
+            + Mean that we can send GET @internal_server/
+            + It can become http://public-backend@internal_server/ and bypass protection
+        + Issues: https://issues.apache.org/jira/browse/HTTPCLIENT-1803
+- Tunnels:
+    + Variant payload using port syntax:
+        GET xyz.burpcollaborator.net:80/bar HTTP/1.1
+        + Idea is routing request to public-backendxyz.burpcollaborator.net
+    + What we can actually receive is mysterious batch of mixed-case DNS lookups from wildly different IPs
+        xYZ.BurpcoLLABoRaTOR.neT.    from 89.234.157.254
+        Xyz.burPColLABorAToR.nET.    from 62.210.18.16 
+        xYz.burpColLaBorATOR.net.    from 91.224.149.254
+    + Discovery:
+        + This web was using Tor2web to route inbound request to Tor hidden service (hide its physical location)
+        + Tor exit nodes randomize case of DNS request (security mechanism - DNS 0x20)
+            https://datatracker.ietf.org/doc/html/draft-vixie-dnsext-dns0x20-00
+            + Why need: DNS is not encrypted and easy to spoofing or cache poisoning
+            + Although domain is case-insensitive, but it create a secret signature
+                + Client request with random uppercase, real server must keep that type
+                + If attacker try to send client fake response, it is difficult to guess the same pattern with request -> terminate it
+        + As Burp Collaborator doesn't know the true pattern, Tor check it is invalid, so try again and cause more DNS response
+        + This unique vuln has an impact that's tricky to quantify
+    + Impact:
+        + As all are routed through Tor, can't be abused to access any internal services
+        + But exceptionally powerful way to mask an attack on third party
+        + Because this target is whistleblowing platform (probably doesn't keep logs) -> may be blamed for attacks
+        + Ability to make webserver connect to hostile site over Tor expose significant attack surface
+
+
+Targeting auxiliary systems:
+- Different
+    + Reverse proxy attack: impact stay consistent (misrouting request access internal)
+    + Auxiliary systems (analytics, cache): figure out actually useful exploit is often harder than causing callback
+- Gathering information:
+    + Unlike routing attack, these techniques typically don't hinder website normal functionality
+    + Collaborator Everywhere inject numerous distinct payload into every requests
+        GET / HTTP/1.1
+        Host: store.starbucks.ca
+        X-Forwarded-For: a.burpcollaborator.net
+        True-Client-IP: b.burpcollaborator.net
+        Referer: http://c.burpcollaborator.net/
+        X-WAP-Profile: http://d.burpcollaborator.net/wap.xml
+        Connection: close
+    + X-Forwarded-For / True-Client-IP:
+        + Used by pentesters to spoof their IP address but also support hostname
+        + App trust these headers -> Perform DNS lookup to resolve hostname to IP -> Callback
+        + Callback itself not exploitable, only serve as a great indicator that vuln to IP spoofing attack
+        + Need additional vuln (such as DNS library memory corruption vuln) to exploit
+    + Referer:
+        + Web analytics systems:
+            + Often fetch any unrecognized URL specified in Referer header of visitors
+            + Some even attempt to actively crawl entire web specified in Referer header for SEO purpose
+        + Tip: if want to encourage crawling, should add permissive robots.txt file (allow crawl more data)
+        + This is a blind SSRF, no way for users to view results of analytics, often occurs minutes or hours after request -> Complicates exploitation
+    + Duplicate parameters:
+        + For some reason, Incapsula will fetch any URL specified twice in query string
+        + But it doesn't have Bug bounty program -> unable to know or exploit
+    + X-Wap-Profile:
+        + Ancient HTTP header which specify URL point to UAProf (User Agent Profile)
+            + XML that define device capabilities (such as screen size, bluetooth support, supported protocols and charsets,....)
+            + Example:
+                X-Wap-Profile: http://nds1.nds.nokia.com/uaprof/N6230r200.xml
+        + Compliant app:
+            + Extract URL -> Fetch and parse specified XML
+            + Use to tailor the content they supply to client
+        + Risk:
+            + Combine of fetching untrusted URL and parsing untrusted XML -> lead to XXE
+        + Unfortunately it's not widely supported, only Facebook uses it. They only fetch XML 26 hours after request, making iterative testing impractical
+- Remote client exploits:
+    + Problem: Base on gathering information method above, direct SSRF is extremely difficult as we receive no feedback from application
+    + Way of exploit: send RCE payload to internal network
+        + Example: https://phrack.org/issues/57/10
+    + This technique isn't interesting so author shift focus to client connecting to us
+        + Like reverse proxies, client often poorly audited and vuln to off-the-shelf tools
+    + Client possible vuln:
+        + We can steal memory by making server establish HTTPS connection with client-heartbleed attack
+        + Headless browsers like PhantomJS (auto render page) are outdated and missing numerous critical security patches
+        + Window based clients may volunteer domain credentials to a running Responder server
+        + Lcamtuf's p0f can uncover what client actually running behind the often-spoofed User-Agent
+    + Redirect handling bypass:
+        + Application filter URL input, but libraries handle redirect url behavior may different -> bypass restriction
+            + Example: Tumblr URL preview only support HTTP, but allow redirect to FTP
+        + JS rendering:
+            + Clients rendering pages + executing JavaScript -> huge attack surface
+            + Rendering Engine Hackability Probe tool designed to thoroughly fingerprint client's capabilities
+                + Identify common mishaps in custom browser (like neglecting enforce the Same Origin Policy)
+                + Flag unusual JS properties
+    + Custom JS properties:
+        + 'parity' property: used to get users wallet's public key, a global unique identifier and discloses their balance
+        + JXBrowser: allow insert JS/Java bridge, possible to exploit -> escape render + RCE
+            https://portswigger.net/research/rce-in-jxbrowser-javascript-java-bridge
+        + file:/// URLs: enable local file theft via malicious HTML stored in env var and displayed in /proc/self/environ (sort of cross-protocol blind XSS)
+    + Benefits of these technique:
+        + Visually display result, every capability also triggers server-side request -> useful even can't see render output
+        + Tests designed to work even on clients that don't execute JS
+- Pre-emptive caching:
+    + In some military server:
+        + Send: GET / with Host: burpcollaborator.net
+        + Receive: normal response + several requests to collaborator a few seconds later
+            GET /jquery.js HTTP/1.1
+            GET /abrams.jpg HTTP/1.1
+    + Discovery:
+        + Something scanning response for resource import and fetching
+            Example:  <img src="/abrams.jpg"/>
+            + Combine Host header point to Burp -> http://burpcollaborator.net/abrams.jpg
+        + It could cache the resource, to confirm theory, read the response receive
+        + Enable interesting attack, reflected XSS, used that to inject a reference to fake jpg on internal server
+    + Exploit:
+        + Find reflected XSS allow insert content to response
+        + Insert fake <img> in internal server (using absolute URL)
+            POST /xss.cgi HTTP/1.1
+            xss=<img src="http://internal-server.mil/index.php/fake.jpg"/>
+        + Proxy scan response, see <img ...>
+        + Fetch that file /index.php/fake.jpg and cache it (proxy have permission to fetch internal file)
+        + Since proxy cached it, retrieve the cached response
+            GET /index.php/fake.jpg
+    + Lab to test: https://hackxor.net/mission?id=4
+
+
+Conclusion:
+- To achieve any defense in depth, reverse proxy should firewalled into a hardened DMZ, isolated from anything that isn't publicly accessible

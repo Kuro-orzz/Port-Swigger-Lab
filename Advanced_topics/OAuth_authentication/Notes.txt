@@ -1,7 +1,7 @@
 OAuth 2.0 authentication vulnerabilities
 - Commonly used authorization framework that enable website to request limit access to user's account on another application
 - Allow user grant this access without exposing their login credential
-- User can fine-tine which data they want to share rather than haing full control of their account to third party
+- User can fine-tine which data they want to share rather than having full control of their account to third party
 - Note:
     + OAuth 2.0 is current standard, some web still use legacy version 1.0
     + Version 2.0 was written from scratch rather than being developed directly from 1.0

