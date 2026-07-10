@@ -4,13 +4,13 @@ Done:
 - Insecure deserialization: 10/10
 - GraphQL API vulnerabilities: 5/5
 - OAuth authentication: 6/6
+- HTTP Host header attacks: 7/7
+- Essential skills: 2/2
 
 In Progress:
 - Server-side template injection: 5/7
 - Web LLM attack: 0/7
 - Web cache poisoning: 0/13
-- HTTP Host header attacks: 0/7
 - HTTP request smuggling: 0/22
 - JWT attacks: 0/8
 - Prototype pollution: 0/10
-- Essential skills: 0/2

