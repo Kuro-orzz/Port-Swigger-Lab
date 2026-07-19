@@ -10,5 +10,8 @@ venv/
 *.csv
 vn_vuln_domain.txt
 wp_domain.txt
+edu_domain.txt
 results.txt
+edu_results.txt
 .run_checkpoint
+.run_checkpoint_edu

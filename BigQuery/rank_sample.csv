@@ -1,0 +1,5 @@
+domain,rank,cms,languages,js_frameworks,web_frameworks,web_server,cdn,ecommerce,http_protocol,https,total_bytes,requests,lcp_render_ms
+listcrawler.eu,1000,,Java,,,,Cloudflare,,,,390889,56,2740
+amazon.co.jp,1000,,,,,,Amazon CloudFront,,,,669355,15,320
+championat.com,1000,,,,,Nginx,jsDelivr,Cart Functionality,,,7861294,382,2308
+emag.ro,1000,,,Vue.js,,Nginx,Amazon CloudFront,Cart Functionality,,,1727902,84,3012
