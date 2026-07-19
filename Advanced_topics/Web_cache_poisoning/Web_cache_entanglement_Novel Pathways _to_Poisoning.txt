@@ -1,0 +1,77 @@
+https://portswigger.net/research/web-cache-entanglement
+
+Presentation premiered at Black Hat USA 2020: https://www.youtube.com/watch?v=bDxYWGxuVqE
+
+- Problem: caches are woven into websites throughout the net, quietly juggling data between users, but rarely scrutinized in depth
+- Goal: remotely probe through the inner workings of caches to find subtle inconsistencies, and combine these with gadgets to build exploit chains
+- Scopes: flaws pervade all caching layers
+    + From sprawling CDNs
+    + Through caching web servers + frameworks
+    + All the way down to fragment-level internal template caches
+- Building on from previous research:
+    + Demonstrate root cause:
+        + Misguided transformations
+        + Naive normalization
+        + Optimistic assumptions
+    + Some types of attack:
+        + Persistently poisoning every page on an online newspaper
+        + Compromising the admin interface on an internal DoD intelligence website
+        + Disabling Firefox updates globally
+
+
+Introduction
+- Caches save copies of responses to reduce load on BE system
+- User send request -> cache receive a HTTP request -> Calculate cache key -> Check whether it already saved or need to forward request to BE
+- Cache key: typically consist of request method + path + query + Host header + some more headers
+- Example:
+    GET /research?x=1 HTTP/1.1
+    Host: portswigger.net
+    X-Forwarded-Host: attacker.net  (unkeyed)
+    User-Agent: Firefox/57.0        (unkeyed)
+    Cookie: language=en;            (unkeyed)
+    + Cache key: https|GET|portswigger.net|/research?x=1
+- Components aren't included in cache key known as unkeyed
+    + If unkeyed can be used to make application serve harmful response
+    -> Possible to manipulate cache into saving and serving to other users
+
+- Beyond Prior Research:
+    + In 2018, research named "Practical Web Cache Poisoning" showed how to use non-standard HTTP headers (such as X-Forwarded-Host, X-Original-URL) to poison caches and compromise web
+    + This paper, target 2 request components that almost always included in cache key - Host header and request line
+        + If placed directly into the key -> impossible to abuse
+        + But these values often parsed, transformed, normalized -> create gaps to slip exploit into
+        + Gaps come from: dangerous but deliberate features -> down to parsing bugs + naive escaping issues -> let different requests collide
+
+
+Methodology
+- Sekect Cache Oracle --> Probe Key Handling --> Exploit chain
+- Select a Cache Oracle:
+    + Implementation and config quirks vary from site to site -> crucial to start understanding how target cache works
+    + Cache Oracle:
+        + Defined as cacheable endpoint on the target site
+        + Must be some way to tell if got cache hit or miss (such as CF-Cache-Status header or through dynamic content or response timing)
+        + Ideally, should reflect the entire URL and at least 1 param
+        -> Will help find discrepancies between cache's param parsing and the application's
+        + If lucky, just ask oracle nicely, it will tell you the cache key
+- Probe Key Handling:
+    + Target: ask a series of questions to identify whether request is transformed in any way when it's saved in the cache key
+    + Common exploitable transformations:
+        + Removing specific query parameters
+        + Removing the entire query string
+        + Removing the port from the Host header
+        + URL-decoding
+    + Issue 2 slightly different request and observing whether the second one causes a cache hit
+    + Note: many cache-key issues directly enable single-request DoS attacks, it might be tempting to report them as-is and move on
+        https://portswigger.net/research/responsible-denial-of-service-with-web-cache-poisoning
+- Exploit:
+    + Final step: chain the cache key transformation with a gadget on target -> turn it into a high-impact exploit
+    + Gadgets: reflect, client-side behaviors like XSS, open redirect, and other that have no classification because usually harmless
+    + Combined Cache poison + gadget in 3 main ways:
+        + Upgrade reflect -> stored XSS -> hit everyone browses poisoned page
+        + Enabling exploitation of dynamic content in resource files (like JS and CSS)
+        + Enabling exploitation of 'unexploitable' vuln that rely on malformed requests browsers won't send.
+    + Each of these may lead to full site takeover. Crucially, the last 2 often left unpatched as they are perceived as being unexploitable
+
+
+Case Studies
+- Unkeyed Query Detection:
+    + 

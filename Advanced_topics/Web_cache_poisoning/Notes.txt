@@ -1,0 +1,5 @@
+Web cache poisoning
+- Advanced technique where attacker exploit behavior of web server and cache, harmful HTTP response is served to other users
+- Involve 2 phases:
+    + How to elicit response from BE that contain dangerous payload
+    + Their response is cached and served to intended victim

@@ -22,3 +22,5 @@
 /.well-known/traffic-advice
 
 /.well-known/appspecific/com.chrome.devtools.json
+/.well-known/posh/spice.json
+.well-known/did-configuration.json

