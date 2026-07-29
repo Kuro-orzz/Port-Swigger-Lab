@@ -6,11 +6,11 @@ Done:
 - OAuth authentication: 6/6
 - HTTP Host header attacks: 7/7
 - Essential skills: 2/2
+- Web cache poisoning: 13/13
 
 In Progress:
 - Server-side template injection: 5/7
-- Web LLM attack: 0/7
-- Web cache poisoning: 0/13
+- Web LLM attack: 2/7
 - HTTP request smuggling: 0/22
 - JWT attacks: 0/8
 - Prototype pollution: 0/10

