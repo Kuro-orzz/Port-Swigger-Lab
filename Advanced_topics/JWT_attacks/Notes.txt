@@ -1,0 +1,291 @@
+JWTs: (JSON web tokens)
+- Standardized format for sending cryptographically signed JSON data between systems
+- In theory, it can contain any kind of data, but most used to send info about users as part of authentication, session handling, and access control mechanisms
+- Unlike classic session tokens: all data that server need is stored client-side within JWT itself 
+-> make JWT a popular choice for highly distributed websites where users need to interact seamlessly with multiple BE servers
+- JWT format:
+    + 3 parts: header, payload, signature
+    + Separated by dot
+    + Header: metadata about token itself
+    + Payload: contain the actual "claim" about the users
+    + ({header base64url-encoded JSON}.{payload base64url-encoded JSON}.{signature})
+    + Data can be easily to read or modified by anyone with access to the token
+    + The security of any JWT-based mechanism is heavily reliant on the cryptographic signature
+- JWT signature:
+    + Server issue token typically generate by hashing header + payload (some cases, also encrypt the result hash), using a secret signing key
+    + Purpose: verify data hasn't been tampered with since it was issued
+        + Signature is directly derived from the rest of token -> changing a single byte of header or payload result in a mismatched signature
+        + Without knowing server's secret signing key -> Shouldn't be possible to generate correct signature
+- JWT vs JWS vs JWE:
+    + JWT specification is very limited, only define format for representing "claims" as a JSON object can be transferred between 2 parties
+    + In practice, JWT aren't used standalone entity, it extended by:
+        + JWS: JSON Web Signature (encode + signature -> can read)
+        + JWE: JSON Web Encryption (encrypt -> can't read)
+        -> Define how to actually implement JWTs
+    + JWT usually either JWS or JWE token (mostly JWS)
+
+
+JWT attack: 
+- Sending modified JWTs to server to achieve malicious goal
+- Attacker may be able to escalate privilege or impersonate other users, taking full control of their account
+- The various specification related to JWT are relatively flexible by design, allow dev to implement details for themselves -> can accidentally introducing vuln even using battle-hardened libraries
+- Arise due to flawed JWT handling:
+    + Not verified properly -> enable attacker tamper value of token's payload
+    + Even robustly verified -> can truly be trusted relies heavily on server's secret key remaining a secret
+    + If secret key is leaked (by guess or brute-forced) -> can generate valid signature for any arbitrary token, compromising entire mechanism
+
+
+Exploiting flawed JWT signature verification:
+- Problem: server don't usually store any info about JWT that they issue -> each token is self-contained entity
+    + Server don't know original contents of token or original signature
+    + If server doesn't verify signature properly, attacker can make arbitrary change to token
+    + Example:
+        {
+            "username": "carlos",
+            "isAdmin": false
+        }
+        + If server identifies session based on username -> can impersonate other logged-in-users
+        + If isAdmin is used for access control -> can provide simple vector for privilege escalation
+- Accepting arbitrary signatures: (1)
+    + JWT libraries typically provide one method for verifying token and decode them
+    + Example: Node.js library jsonwebtoken has verify() and decode()
+    + Sometimes, dev confuse these 2 methods and only pass token to decode() (forget to verify() first)
+- Accepting tokens with no signature: (2)
+    + JWT header contain 'alg' param that tell server which algo used to sign token and verifying the signature
+        {
+            "alg": "HS256",
+            "typ": "JWT"
+        }
+    + Inherently flawed: server implicitly trust user-controllable input that hasn't been verified yet
+        -> Attacker can directly influence how the server check whether token is trustworthy
+    + "alg": "none" -> called unsecured JWT (unsigned token)
+        + Due to obvious danger of this, server usually reject token without signature
+        + However, this filter relies on string parsing -> can bypass using obfuscation techniques (such as mixed capitalization and unexpected encoding)
+
+
+Brute-forcing secret keys: (3)
+- Some signing algo (such as HS256 (HMAC + SHA-256)), use an arbitrary, standalone string as secret key -> can guess or brute-force
+- When implementing JWT applications, dev sometimes
+    + Forget to change default or placeholder secrets
+    + Copy and paste code snippets they find online
+    -> Can use wordlist of well-known secret to brute-force
+- Brute-forcing secret keys using hashcat:
+    + https://hashcat.net/wiki/doku.php?id=frequently_asked_questions#how_do_i_install_hashcat
+    + Just need a valid, signed JWT from target server, then run command:
+        hashcat -a 0 -m 16500 <jwt> <wordlist>
+    + How it work:
+        + Hashcat sign header + payload from JWT using each secret in wordlist
+        + Then compare result signature with original one
+        + If match, output following format
+            <jwt>:<identified-secret>
+        + Note: need include --show to output results
+
+
+JWT header parameter injections:
+- According JWS specification, only 'alg' header param is mandatory
+- JWT header a.k.a JOSE header (JSON Object Signing and Encryption)
+- Some headers tell server which key use to verify signature (can manipulate by attacker):
+    + jwk (JSON Web Key): provide embedded JSON oject representing key
+    + jku (JSON Web Key Set URL): provide URL from which servers can fetch a set of keys contain the correct key
+    + kid (Key ID): provide ID that server can use to identify the correct key (in case there are multiple key to choose)
+
+- Injecting self-signed JWTs via the jwk parameter: (4)
+    + jwk header param: use to embed public key directly within token itself in JWT format
+    + Example:
+        {
+            "kid": "ed2Nf8sb-sD6ng0-scs5390g-fFD8sfxG",
+            "typ": "JWT",
+            "alg": "RS256",
+            "jwk": {
+                "kty": "RSA",
+                "e": "AQAB",
+                "kid": "ed2Nf8sb-sD6ng0-scs5390g-fFD8sfxG",
+                "n": "yy1wpYmffgXBxhAUJzHHocCuJolwDqql75ZWuCQ_cb33K2vh9m"
+            }
+        }
+    + Ideally, server should only use a limited whitelist of public keys to verify signature
+    + However, misconfigured servers sometimes use any valid key that's embedded in jwk param
+    + Exploit:
+        + Create your own RSA private key
+        + Embedding the public key in jwk header
+        + Sign header + payload by your own key
+        + Server accept valid key that you add in jwk
+    + JWT Editor extension: provide userful features to test this vuln
+        + JSON Web Token > Attack > Embedded JWK
+
+- Injecting self-signed JWTs via the jku parameter: (5)
+    + jku header param (JWK Set URL): reference a url to fetch the relevant key
+    + Example:
+        {
+            "keys": [
+                {
+                    "kty": "RSA",
+                    "e": "AQAB",
+                    "kid": "75d0ef47-af89-47a9-9061-7c02a610d5ab",
+                    "n": "o-yy1wpYmffgXBxhAUJzHHocCuJolwDqql75ZWuCQ_cb33K2vh9mk6GPM9gNN4Y_qTVX67WhsN3JvaFYw-fhvsWQ"
+                }
+            ]
+        }
+    + Sometimes it exposed publicly via standard endpoint (such as /.well-known/jwks.json)
+    + Secure web should only fetch keys from trusted domain, but can sometime take advantage of URL parsing discrepancies to bypass this filtering
+    
+- Injecting self-signed JWTs via the kid parameter: (6)
+    + Servers may use several cryptographic keys for signing data, not just JWT
+    -> Header contain kid param (Key ID), help identify which key use when verify signature
+    + Verification keys often stored as a JWK Set -> server look for key that have same kid as the token
+    + Problem: JWS specification doesn't define a structure for this ID - just arbitrary string of dev's choosing (example: they might use kid point to entry in DB or file name)
+    + If param vuln to directory traversal -> attacker can force server use arbitrary file from filesystem as verification key
+        {
+            "kid": "../../path/to/file",
+            "typ": "JWT",
+            "alg": "HS256",
+            "k": "asGsADas3421-dfh9DGN-AFDFDbasfd8-anfjkvc"
+        }
+    + Especially dangerous if JWT signed using symmetric algorithm(verify key = signing key):
+        + Attacker can point kid param to a predictable, static file -> then sign JWT using secret that match content of file
+        + Trick: using /dev/null file (empty file, return empty string) -> signing token with empty string will result in valid signature
+        + If server store verification keys in DB, it also a potential vector for SQL injection attack
+- Other interesting JWT header parameters:
+    + cty (Content Type): declare a media type for content in JWT payload
+        + This usually ignore from header, but underlying parsing library may support it anyway
+        + If can bypass signature verification -> change value to text/xml or application/x-java-serialized-object -> can enable new vector for XXE and deserialization attack
+    + x5c (X.509 Certificate Chain): pass the X.509 public key certificate or certificate chain of key used to digitally sign JWT
+        + This header param can used to inject self-signed certificates, similar to jwk injection
+        + Due to complexity of X.509 format and its extension, parsing these cert can also introduce vuln
+        + More detail: CVE-2017-2800 and CVE-2018-2633
+
+
+JWT algorithm confusion attack: (a.k.a key confusion attack)
+- Occur when attacker is able to force server verify signature of JWT using different algo than is intended by web's dev
+    + If not handle properly, may enable attacker forge valid JWT contain arbitrary value without knowing server's secret signing key
+
+- Symmetric vs asymmetric algorithms:
+    + JWT can be signed using a range of different algo
+        + Example: 
+            + HS256 = HMAC + SHA-256 (symmetric key)
+            + RS256 = RSA + SHA-256 (asymmetric key pair)
+    + Symmetric algo -> Single secret key to sign + verify token
+    + Asymmetric algo -> private key sign token + public key verify signature
+
+- How vulnerabilities arise:
+    + Root cause: Flawed implementation of JWT libraries
+        + Actutal verification process differs depend on algo used, but many libraries provide a single algorithm-agnostic method for verifying signatures
+        + These methods rely on 'alg' param in header to decide which type of verify() to perform
+    + Simplified generic verify() pseudo-code of some libraries:
+        function verify(token, secretOrPublicKey) {
+            algorithm = token.getAlgHeader();
+            if (algorithm == "RS256") {
+                // Use the provided key as an RSA public key
+            } else if (algorithm == "HS256") {
+                // Use the provided key as an HMAC secret key
+            }
+        }
+    + If web dev use algo like RS256, they will implement as follow:
+        publicKey = <public-key-of-server>;
+        token = request.getCookie("session");
+        verify(token, publicKey);
+    + Problem:
+        + If server receive token signed using symmetric algo like HS256, verify() method will treat public key as HMAC secret
+        -> Attacker could sign token using HS256 and public key -> server will same public key to verify signature
+    + Note: 
+        + Public key used to sign must absolutely identical to the one stored on server (include same format and preserving any non-printing characters)
+        + In practice, need to experiment with different formatting for this to work
+
+- Performing an algorithm confusion attack: (7)
+    + Process:
+        + Step 1: Obtain server's public key
+            + Servers sometimes exposed JWK via standard endpoint /jwks.json or /.well-known/jwks.json
+            + These may stored in array of JWKs called keys, known as JWK Set
+            {
+                "keys": [
+                    {
+                        ....
+                    }
+                ]
+            }
+            + If key isn't exposed publicly, may able to extract from pair of existing JWTs
+        + Step 2: Convert the public key to a suitable format
+            + Server expose public key in JWK format
+            + But when verifying signature of token, it will use its own copy of key from local filesystem or database -> stored in different format
+            + In order attack to work, version of key must identical to server's local copy, every byte must match, include non-printing characters
+            + Using JWT Editor extension:
+                + Click New RSA, paste JWK you obtained
+                + Select PEM button and copy result
+                + Base64-encode PEM
+                + Click New Symmetric Key, generate new key in JWK format
+                + Replace k param with Base64-encoded PEM
+                + Save key
+        + Step 3: Modify our JWT
+            + Make sute alg header is set to HS256
+        + Step 4: Sign the JWT using the public key
+            + Sign token using HS256 algo with RSA public key as secret
+
+- Deriving public keys from existing tokens: (8)
+    + In case public key isn't readily available, still be able to test by deriving key from pair of existing JWTs
+    + Tool: https://github.com/nu11secur1ty/rsa_sign2n/blob/main/jwt_forgery.py
+    + Simplified version of tool: docker run --rm -it portswigger/sig2n <token1> <token2>
+    + How it work:
+        + Use JWT you provide to calculate one or more potential values of n
+        + One of those will match value n used by server's key
+        + Output:
+            + A Base64-encoded PEM key in both X.509 and PKCS1 format.
+            + A forged JWT signed using each of these keys.
+        + To identify correct key, send request contain each of the forged JWTs
+
+
+
+01_JWT_authentication_bypass_via_unverified_signature
+- This lab only pass token to decode(), forget to verify() first
+- So we just need to change payload['sub'] = administrator
+- Then we will be granted access to /admin
+
+02_JWT_authentication_bypass_via_flawed_signature_verification
+- This lab is insecurely configured to accept unsigned JWTs
+    + Need to set header to { 'typ': 'JWT', 'alg': 'none' }
+    + payload_json['sub'] = 'administrator'
+    + signature = ''
+- Server is implicitly trust that unsigned token and grant access to /admin
+
+03_JWT_authentication_bypass_via_weak_signing_key
+- In this case, secret key is using to sign and verify token is extremely weak
+    + Just a single string and it can brute-force using hashcat
+        hashcat -a 0 -m 16500 <jwt> <wordlist>
+    + In my case, secret = 'secret1' (idk is it same for other users)
+- Just using that to sign header + payload to generate arbitrary token that have access to /admin
+
+04_JWT_authentication_bypass_via_jwk_header_injection
+- Server support jwk param in JWT header
+    + But misconfig in handling make it accept any key embedded in jwk param
+- Exploit:
+    + Create your own RSA key
+    + Replace it in jwk param
+    + Sign header + payload (misconfig in accept any key)
+- Final just account admin panel to delete target account
+
+05_JWT_authentication_bypass_via_jku_header_injection
+- This case, JWT auth flaw in fetching key from any server and not verify that key
+    + So we can stored malicious payload in attacker's server
+    + Then replace jku param point to that url
+- Exploit:
+    + Create your own RSA Key
+    + Store in attacker's server in true format of jku
+    + Replace jku value by that url point to malicious json filter
+
+06_JWT_authentication_bypass_via_kid_header_path_traversal
+- In this lab, kid param in header is using to fetch the relevant key from filesystem
+    + But it vulns to directory traversal
+    + Fetch any file if provide correct path -> use static /dev/null file
+- Exploit:
+    + Set kid = '../../../../../../../dev/null'
+    + Create your own symmetric key with k is empty string
+    + Sign header + payload by that empty key
+
+07_JWT_authentication_bypass_via_algorithm_confusion
+- Go to /jwks.json endpoint to get public keys
+- Public key in JWT format -> PEM (RSA) -> Base64-encode PEM -> Set k param in symmetric key
+- Set alg param in header to HS256
+- Sign header + payload with public key
+- With the result token, use that to access admin panel
+
+08_JWT_authentication_bypass_via_algorithm_confusion_with_no_exposed_key
+-
