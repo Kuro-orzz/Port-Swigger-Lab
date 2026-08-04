@@ -1,0 +1,221 @@
+https://portswigger-labs.net/dom-invader/
+
+
+
+JavaScript injection: 
+- Arise when attacker can control data as JS -> cause arbitrary JS in victim's browser
+- Impact:
+    + Stealing victim's session token or login credentials
+    + Performing arbitrary actions on victim's behalf
+    + Or even logging their keystrokes
+- Sink can lead to vuln:
+    + eval()
+    + Function()
+    + setTimeout()
+    + setInterval()
+    + setImmediate()
+    + execCommand()
+    + execScript()
+    + msSetImmediate()
+    + range.createContextualFragment()
+    + crypto.generateCRMFRequest()
+- How to prevent: avoid allowing data from any untrusted source to be execute as JS
+
+
+Document-domain manipulation:
+- Arise when attacker is allowed to set document.domain property through URL
+- document.domain:
+    + Used by browser in their enforcement of the same origin policy
+    + If 2 pages different origin set the same document.domain value
+        -> those can interact in unrestricted ways
+        -> fully compromise target page via attacker-controllable page
+        -> open up possibilities for exploitation as XSS vuln
+- Browser:
+    + Enforce some restrictions on value can assign to document.domain
+    + Prevent use of completely different value than the actual origin of page
+    + 2 important caveats:
+        + Browser allow use of child or parent domain -> can switch domain to related web with a weaker security posture
+        + Some browser quirks enable switching to completely unrelated domain
+- Sink can lead to vuln:
+    + document.domain
+- How to prevent: avoid allowing data from any untrusted source to dynamically set the document.domain property
+
+
+WebSocket-URL poisoning:
+- Arise when script use input as the target of a WebSocket connection 
+-> Can construct URL can cause victim's browser open connection to attacker-controllable url 
+- Impact:
+    + Depend on how web use WebSocket
+    + If transmit sensitive data -> attacker may be able to capture data
+    + If read data from WebSocket and process it -> can subvert website's logic or deliver client-side attack
+- Sink can lead to vuln:
+    + WebSocket
+- How to prevent: avoid allowing data from any untrusted source to dynamically set the target URL of a WebSocket connection
+
+
+Link manipulation:
+- Arise when script write input to a navigation target within the current page (such as clickable link, submission URL of form)
+-> Can construct URL, if victim visit, will modify target link in response
+- Impact:
+    + Cause user redirected to arbitrary URL -> could facilitate phishing attack
+    + Cause user submit sensitive form data to server controlled by attacker
+    + Change file or query string associated with a link -> cause user perform unintended action within the application
+    + Bypass browser anti-XSS defense by inject on-site link contain XSS (cuz anti-XSS do not typically account for on-site link)
+- Sink can lead to vuln:
+    + element.href
+    + element.src
+    + element.action
+- How to prevent: avoid allowing data from any untrusted source to dynamically set the target URL for links or forms
+
+
+Web message manipulation:
+- Arise when script send input as a web message to another document within browser
+-> Attacker could use web msg data as source by construct web page
+-> If victim visit, cause browser send web msg contain data that under attack's control
+- Reference: https://portswigger.net/web-security/dom-based/controlling-the-web-message-source
+- Sink can lead to vuln:
+    + postMessage()
+- How to prevent: 
+    + Avoid sending web messages that contain data that originated from any untrusted source
+    + When sending cross-origin messages, should always explicitly specify target window
+    + Implement robust measures to verify origin of any incoming messages
+
+
+Ajax request-header manipulation:
+- Ajax enable asynchronous request to server -> can dynamically change content without reload page
+- Arise when script write input in request header of Ajax request that using an XMLHttpRequest object
+    -> Can construct URL, if victim visit -> set arbitrary header in subsequent Ajax request 
+    -> can be used as starting point to chain attacks
+- Impact:
+    + Depend on role of specific HTTP headers in server-side processing of Ajax request
+    + If header is used to control behavior of result -> can cause vicitm to perform unintended action
+- Sink can lead to vuln:
+    + XMLHttpRequest.setRequestHeader()
+    + XMLHttpRequest.open()
+    + XMLHttpRequest.send()
+    + jQuery.globalEval()   (should place in JS injection)
+    + $.globalEval()        (should place in JS injection)
+- How to prevent: avoid allowing data from any untrusted source dynamically set Ajax request headers
+
+
+Local file-path manipulation:
+- Arise when script pass input to file-handling API as filename param
+    -> Can construct URL, if victim visit -> cause browser open arbitrary local file
+- Impact:
+    + Depend on other suitable functionality being present on web
+    + If web read data from file -> attacker may be able to retrieve data
+    + If web write specific data to sensitive file -> attacker may be able to write their own data to file (ex: could be config file of OS)
+- Sink can lead to vuln:
+    + FileReader.readAsArrayBuffer()
+    + FileReader.readAsBinaryString()
+    + FileReader.readAsDataURL()
+    + FileReader.readAsText()
+    + FileReader.readAsFile()       (not exist but it wrote in Portswigger)
+    + FileReader.root.getFile()
+- How to prevent: avoid allowing data from any untrusted source to dynamically pass a filename to a file-handling API
+
+
+Client-side SQL injection:
+- Arise when script incorporates input into client-side SQL query in unsafe way
+    -> Attacker can construct URL, if victim visit -> will execute arbitrary SQL query in local SQL db of victim's browser
+- Impact:
+    + Depend on website's usage of the SQL db
+    + If db is used to store sensitive data (such as messages on social network) -> attacker may be able to retrieve data
+    + If db is used to store pending user action (such as outgoing messages in email app) -> attacker may be able to modify data and perform arbitrary action on user's behalf
+- Sink can lead to vuln:
+    + executeSql()
+- How to prevent:
+    + Make sure to use parameterized queries (aka prepare statemnts) for db access, 2 step to safely incorporate potentially tainted data into SQL queries:
+        + Specify structure of query, leaving placeholder for each user input
+        + Specify content of each placeholder
+    + In JS executeSql() API, use ? as placeholder in query string, pass each value as an extra param
+    + Recommend: parameterize every variables data item in queries, even if not obviously tainted, still can use to avoid oversights from later code changes
+- Example:
+    + Vuln query concat string:
+        db.transaction(function(tx) {
+            tx.executeSql("SELECT * FROM users WHERE name = '" + userInput + "'");
+        });
+    + Safe implement:
+        db.transaction(function(tx) {
+            tx.executeSql("SELECT * FROM users WHERE name = ?", [userInput]);
+        });
+
+
+HTML5-storage manipulation:
+- Arise when script store input in HTML5 storage of browser (either localStorage or sessionStorage)
+    -> Attack construct URL, if victim visit -> cause victim's browser store payload
+- But itself it not a security vuln, if application later read data back from storage and process in unsafeway
+    -> can leverage to deliver DOM-based attack (such as XSS, JS injection)
+- Sink can lead to vuln:
+    + sessionStorage.setItem()
+    + localStorage.setItem()
+- How to prevent: avoid allowing data from any untrusted source to be placed in HTML5 storage
+
+
+Client-side XPath injection:
+- Arise when attacker's payload can incorporate into XPath query
+    -> Attacker can construct URL, if victim visit -> trigger execution of arbitrary XPath query -> cause data to be retrieved and processed by website
+- Impact:
+    + Depend on purpose for which query are used
+    + Possible to subvert website's logic or cause unintended action on behalf of user
+- Sink can lead to vuln:
+    + document.evaluate()
+    + element.evaluate()
+- How to prevent: avoid allowing data from any untrusted source to be incorporated into XPath queries
+
+
+Client-side JSON injection:
+- Arise when incorporate input into string that is parsed as JSON data structure, then process by application
+    -> Attacker can construct URL, if victim visit -> cause arbitrary JSON data to be processed
+- Impact:
+    + Depend on which data is used, can subvert web's logic, or cause unintended action on behalf of victim
+- Sink can lead to vuln:
+    + JSON.parse()
+    + jQuery.parseJSON()
+    + $.parseJSON()
+- How to prevent: avoid allowing strings containing data from any untrusted source to be parsed as JSON
+
+
+DOM-data manipulation:
+- Arise whe script write input to field within DOM that is used within the visible UI or client-side logic
+    -> Attack can construct URL, if victim visit -> can modify the appearance or behavior of client-side UI
+    -> Can exploit by both reflect and stored DOM-based Attack
+- Impact:
+    + Can leverage to perform defacement of website (such as changing text or images that displayed on particular page)
+    + If attacker is able to change <src> property -> could induce victim perform unintended action by import malicious JS file
+- Sink can lead to vuln:
+    + script.src
+    + script.text
+    + script.textContent
+    + script.innerText
+    + element.setAttribute()
+    + element.search
+    + element.text
+    + element.textContent
+    + element.innerText
+    + element.outerText
+    + element.value
+    + element.name
+    + element.target
+    + element.method
+    + element.type
+    + element.backgroundImage
+    + element.cssText
+    + element.codebase
+    + document.title
+    + document.implementation.createHTMLDocument()
+    + history.pushState()
+    + history.replaceState()
+- How to prevent:
+    + Avoid allowing data from any untrusted source to be dynamically written to DOM-data fields
+    + Burp Suite can auto identify this issue using static code analysis, which may lead to false positive that are not actually exploitable
+    + The relevant code and execution paths should be reviewed to determine whether this vulnerability is indeed present, or whether mitigations are in place that would prevent exploitation.
+
+
+Denial of service:
+- Arise when script pass input in unsafe way to problematic platform API (such as an API that can cause computer consume excessive amount of CPU or disk space)
+    -> Can reject attempts to store data in localStorage or killing busy scripts
+- Sink can lead to vuln:
+    + requestFileSystem()
+    + RegExp()
+- How to prevent: avoid allowing data from any untrusted source to dynamically pass data into problematic platform APIs

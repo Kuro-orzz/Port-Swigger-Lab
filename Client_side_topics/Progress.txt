@@ -5,7 +5,7 @@ Done:
 - Cross-site request forgery (CSRF): 12/12
 - Web Sockets: 3/3
 - Clickjacking: 5/5
+- DOM-based vulnerabilities: 7/7
 
 In Progress:
 - Cross-site scripting (XSS): 28/30
-- DOM-based vulnerabilities: 0/7

