@@ -1,0 +1,21 @@
+Object.defineProperty(obj, 'name', {
+    // === CÁC THUỘC TÍNH CỦA DATA DESCRIPTOR ===
+
+    // value — Giá trị của thuộc tính
+    value: undefined,        // mặc định: undefined
+
+    // writable — Có cho phép gán lại giá trị không
+    writable: false,         // mặc định: false
+    //   true  → obj.name = "new" ✅ được phép
+    //   false → obj.name = "new" ❌ thất bại (strict mode → TypeError)
+
+    // enumerable — Có xuất hiện trong vòng lặp for...in không
+    enumerable: false,       // mặc định: false
+    //   true  → hiện trong for...in, Object.keys()
+    //   false → ẩn đi
+
+    // configurable — Có cho phép xóa/sửa descriptor không
+    configurable: false      // mặc định: false
+    //   true  → có thể delete obj.name, có thể gọi defineProperty lại
+    //   false → khóa cứng descriptor, không xóa, không sửa được
+});

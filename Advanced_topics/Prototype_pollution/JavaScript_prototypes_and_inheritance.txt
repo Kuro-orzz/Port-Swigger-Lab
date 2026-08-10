@@ -1,0 +1,55 @@
+https://portswigger.net/web-security/prototype-pollution/javascript-prototypes-and-inheritance
+
+
+Object in JS:
+- Just a collection of key:value pairs known as properties
+    const user =  {
+        username: "wiener",
+        userId: 01234,
+        isAdmin: false
+    }
+- Can access using either dot notation or bracket notation:
+    user.username     // "wiener"
+    user['userId']    // 01234
+- As well as data, properties may also contain executable functions
+    const user =  {
+        username: "wiener",
+        userId: 01234,
+        exampleMethod: function(){
+            // do something
+        }
+    }
+- Example above is an "object literal", it was created using curly brace syntax to explicitly declare its properties and their initial values
+
+
+Prototype in JS:
+- Every object in JS is linked to another object -> prototype
+- By default, JS auto assign new objects one of its built-in prototypes
+- Example:
+    let myObject = {};  Object.getPrototypeOf(myObject);  // Object.prototype
+    let myString = "";  Object.getPrototypeOf(myString);  // String.prototype
+    let myArray  = [];  Object.getPrototypeOf(myArray);   // Array.prototype
+    let myNumber = 1;   Object.getPrototypeOf(myNumber);  // Number.prototype
+- Objects automatically inherit all properties of their prototype, unless they already have their own property with same key -> enable create new obj to reuse properties and method
+- How object inheritance work:
+    + JS engine first tries to access directly on object itself
+    + If object doesn't have a matching property -> look for it on object's prototype instead
+
+Prototype chain:
+- Everything in JS is an object, object's prototype is just another object (should have its own prototype and so on)
+- Example:
+    Object.prototype __ String.prototype __ username
+                    |__ Array.prototype __ itemsInCart
+                    |__ Number.prototype __ remainingStock
+- Objects inherit properties not just from directs prototype, but from all above in prototype chain
+    -> username has access to both String.prototype and Object.prototype
+
+Accessing an object's prototype using __proto__:
+- Every object has special property to access its prototype. Although this doesn't have a formally standardized name, __proto__ is used by most browsers
+- Access:
+    username.__proto__
+    username['__proto__']
+    
+    username.__proto__                        // String.prototype
+    username.__proto__.__proto__              // Object.prototype
+    username.__proto__.__proto__.__proto__    // null

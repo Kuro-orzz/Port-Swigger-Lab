@@ -1,0 +1,46 @@
+https://portswigger.net/research/server-side-prototype-pollution
+
+
+Introduction
+- Detecting server-side prototype pollution legitimately is a huge challenge. The very nature of how it works can semi-permanently break functionality on the server
+- This research will show you how to detect prototype pollution with harmless requests that cause subtle differences in the response to prove you were successful
+
+- JSON.parse():
+    let obj = {a: 1};
+    obj.__proto__ === Object.prototype // true
+    obj.hasOwnProperty('__proto__'); // false
+    let json = '{"__proto__":"WTF"}';
+
+    JSON.parse(json).hasOwnProperty('__proto__');// true!
+    let obj = JSON.parse('{"a":123,"b":123,"__proto__":{"pollute":true}}');
+    // this object will pollute the global Object prototype if used with a vulnerable merge operation
+- Vulnerable libraries:
+    + The most likely place a prototype pollution vulnerability occurs is within a JavaScript library that has a method to merge objects
+    + Such as Lodash library (has method merge() - accept target and source object)
+        + If can control __proto__ property of sourec object -> vuln
+        + Example:
+            _.merge(userDetails, req.body);
+- The DoS problem:
+    + When testing for client-side prototype pollution, refreshing browser can remove modification to Object prototype
+    + But in server-side prototype pollution, modified one of global prototype -> change persists for the lifetime of Node process
+    => If break core functionality of site, could prevent application from working correctly for all users. Certain vectors can even shutdown Node process completely
+    + Only way to undo is restart Node process
+    + Even if don't cause DOS, still don't have access to error message -> difficult to know attempt success or not
+    + To test this reliably and safely, we need a range of non-destructive techniques that still trigger distinct and predictable changes in the server's behaviour.
+
+
+Detection methods that cause DoS:
+- Encoding:
+    {"__proto__": {"encoding": "x"}} --> Connection reset
+    + Root cause:
+        if (options && options.encoding) {
+            this.decoder = new StringDecoder(options.encoding);
+        //property is sent to StringDecoder containing invalid charset
+            this.encoding = options.encoding;
+        }
+    + In real attack, this would mean the whole app went down
+- Constructor:
+    + Before: {"foo": "bar"} --> 200
+    + Probe: {"constructor": {"keys": "x"}}
+    + After: {"foo": "bar"} --> 500
+    + This change Object.keys() to "x"

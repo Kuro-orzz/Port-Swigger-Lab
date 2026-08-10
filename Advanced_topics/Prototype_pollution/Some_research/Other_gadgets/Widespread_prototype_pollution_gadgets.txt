@@ -1,0 +1,65 @@
+https://portswigger.net/research/widespread-prototype-pollution-gadgets
+
+
+Prototype pollution gadgets in browser JavaScript APIs:
+- Discover some JS APIs contain pp gadget
+    + Function accept object as arguments can be polluted just like other object
+    + For example, when calling fetch(), there is an optional argument -> allow to control headers, body params,...
+        + fetch(resource, options)
+        + If site doesn't specify one of those properties -> possible to use pp to control them
+            Object.prototype.body = "foo=bar"; // override body value
+            fetch('/', {method:"POST"})
+    + Even ES5 functions such as Object.defineProperty are vulnerable - if dev does not specify a 'value' property
+        + Object.defineProperty(obj, prop, descriptor)
+        + Example fail override:
+            let myObject = {property:"Existing property value"};
+            Object.defineProperty(myObject,'property', {configurable:false,writable:false} );
+            myObject.property = 'Should fail';
+            alert(myObject.property);//Existing property value
+        + Example success override: (overwrite value property)
+            Object.prototype.value='overwritten';
+            let myObject = {property: "Existing property value"};
+            Object.defineProperty(myObject,'property', {configurable:false,writable:false});
+            alert(myObject.property);//overwritten!
+        + Another interesting property to pollution is 'configurable'
+            + Default value is false -> un-configurable
+            + If not define -> override to true -> can redefinable later -> can lead to JS sandbox escape
+
+Local storage:
+- localStorage/sessionStorage also inherit from Object.prototype
+    Object.prototype.foo = 'bar';
+    localStorage.getItem('foo');//not vulnerable
+    localStorage.foo//vulnerable and will return bar
+
+Google analytics:
+- DOM Invader report:
+    + hitCallback - gadget
+    + setTimeout(fn, delay) - sink
+        + If fn is string instead of function -> execute as evel()
+- We trace back to Google analytics
+    this.Ja = function() {
+        !b.fb && c && setTimeout(c, 10)
+    }
+    + c: contain value of hitCallback gadget
+- Possible to gain DOM XSS on target web using that vuln version of GA
+
+Google tag manager: (GTM)
+- Find 2 gadgets:
+    + sequence (gadget), eval() (sink)
+    + event_callback (gadget), setTimeout() sink
+- They report this to Google, but they claim it's the customer's responsibility to ship code that doesn't contain prototype pollution sources
+- Example exploit web:
+    https://es.wordpress.org/patterns/?__proto__%5Bsequence%5D=alert%28document.domain%29-
+
+Adobe dynamic tag management:
+- Test lab: https://portswigger-labs.net/dom-invader-prototype-pollution/testcases/prototype-pollution-adobe-tag-management/
+    + Document by Sergey Bobrov
+- DOM Invader found multiple undocumented gadget:
+    + But most of those you didn't have full control over URL
+    + In trackingServerSecure gadget, you couldn't control protocol but could control the host -> could lead to DOM XSS
+
+
+Conclusion:
+- When using browser API allow object in arguments, ensure don't expose gadget that can be exploited by CSPP
+- Good defense in depth is to use object with null prototype
+- If using JS lib, should scan for gadget before deploy

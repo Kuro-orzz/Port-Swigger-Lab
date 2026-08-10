@@ -1,0 +1,78 @@
+fetch(url, {
+    // 1. method — Phương thức HTTP
+    method: "GET", // "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"
+
+    // 2. headers — Các header HTTP
+    headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer token123"
+    },
+
+    // 3. body — Dữ liệu gửi đi (không dùng với GET/HEAD)
+    body: JSON.stringify({ key: "value" }),
+    // Có thể là: String, FormData, Blob, BufferSource,
+    //            URLSearchParams, ReadableStream
+
+    // 4. mode — Chế độ CORS
+    mode: "cors",
+    // "cors"        — cho phép cross-origin (mặc định)
+    // "no-cors"     — chỉ simple request, không đọc response
+    // "same-origin" — chặn mọi cross-origin request
+    // "navigate"    — dùng bởi navigation
+
+    // 5. credentials — Gửi cookie/auth hay không
+    credentials: "same-origin",
+    // "omit"        — không bao giờ gửi cookie
+    // "same-origin" — chỉ gửi nếu cùng origin (mặc định)
+    // "include"     — luôn gửi cookie (kể cả cross-origin)
+
+    // 6. cache — Chiến lược cache
+    cache: "default",
+    // "default"         — dùng cache bình thường
+    // "no-store"        — bỏ qua cache hoàn toàn
+    // "reload"          — không dùng cache, nhưng cập nhật cache
+    // "no-cache"        — kiểm tra với server trước khi dùng cache
+    // "force-cache"     — dùng cache dù đã hết hạn
+    // "only-if-cached"  — chỉ dùng cache (phải kèm mode: "same-origin")
+
+    // 7. redirect — Xử lý redirect
+    redirect: "follow",
+    // "follow"  — tự động đi theo redirect (mặc định)
+    // "error"   — ném lỗi nếu gặp redirect
+    // "manual"  — không tự follow, trả về opaque-redirect response
+
+    // 8. referrer — URL referrer
+    referrer: "about:client",
+    // URL string  — dùng URL đó làm Referer header
+    // ""          — không gửi Referer
+    // "about:client" — mặc định, dùng referrer mặc định của client
+
+    // 9. referrerPolicy — Chính sách gửi Referer
+    referrerPolicy: "strict-origin-when-cross-origin",
+    // "no-referrer"
+    // "no-referrer-when-downgrade"
+    // "origin"
+    // "origin-when-cross-origin"
+    // "same-origin"
+    // "strict-origin"
+    // "strict-origin-when-cross-origin" (mặc định)
+    // "unsafe-url"
+
+    // 10. integrity — Subresource Integrity hash
+    integrity: "sha256-abcdef...",
+
+    // 11. keepalive — Cho phép request tồn tại sau khi page unload
+    keepalive: false,
+
+    // 12. signal — AbortSignal để hủy request
+    signal: new AbortController().signal,
+
+    // 13. priority — Mức ưu tiên (mới hơn)
+    priority: "auto",
+    // "high"  — ưu tiên cao
+    // "low"   — ưu tiên thấp
+    // "auto"  — trình duyệt tự quyết định (mặc định)
+
+    // 14. window — Chỉ có thể đặt là null
+    window: null
+});

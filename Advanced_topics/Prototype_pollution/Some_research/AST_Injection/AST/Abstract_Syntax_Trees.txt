@@ -1,0 +1,151 @@
+https://www.twilio.com/en-us/blog/developers/tutorials/building-blocks/abstract-syntax-trees
+
+Convert JS to AST: https://astexplorer.net/
+
+What is AST:
+- Abstract Syntax Trees or ASTs are tree representations of code
+- A fundamental part of the way a compiler works
+- AST_process.png
+    input --(lexical analysis)--> tokens --(syntax analysis)--> AST --(code generation) -->
+
+- Lexical Analysis aka Tokenization:
+    + Code is converted into a set of tokens describe the different part of code (same method as syntax highlighting)
+    + Example: isPanda('🐼'); function
+        [
+            { type: 'Identifier', value: 'isPanda' },
+            { type: 'Punctuator', value: '('},
+            { type: 'String', value: "'🐼'"},
+            { type: 'Punctuator', value: ')'},
+        ];
+    + Break text into words -> be able to make differentiation between punctuation, verbs, nouns, numbers,...
+- Syntax Analysis aka Parsing:
+    + Turn list of token -> AST
+    + Example: output from previous step
+        {
+            type: 'Program',
+            body: [
+                {
+                    type: 'ExpressionStatement',
+                    expression: {
+                        type: 'CallExpression',
+                        callee: { type: 'Identifier', name: 'isPanda' },
+                        arguments: [{ type: 'Literal', value: '🐼', raw: "'🐼'" }],
+                    },
+                },
+            ],
+            sourceType: 'script',
+        }
+    + Turn list of words -> data structure representing things (such as sentences, what role a certain noun plays in a sentence or whether we are in a listing)
+    + Another example is DOM - where previous step just break down HTML into 'tag' and 'text', this step would generate hierarchy represented as DOM
+    + AST format will differ depend on language using for parsing (In JS, common standard is ESTree)
+        + Visualize: https://github.com/chrisvrose/estree-visualize
+    + In general, AST is tree structure where every node has at least a type specifying what it is representing
+- Code Generation:
+    + This step can be multiple step by itself
+    + Once we have AST, can both manipulate it as "print" it into different type of code (generate depend on language)
+    + Manipulate code through AST is safer than directly on the code as text or on list of tokens:
+        + Text: Manipulating is always dangerous, it shows the least amount of context. If ever tried to use string replacements or regular expressions you probably noticed how easy it is to get it wrong.
+        + Token: manipulate isn't easy. While we might know what variable is, we still don't know scope of var or any var it might clash with
+        + AST: provide both information about structure of code and scope of this effect due to tree structure
+    + Once we have manipulated the tree, we can then print tree to output whatever it expected
+        + TypeScript compiler -> JS code
+        + Other compiler -> Machine code
+    + Same structure (AST) can output different format. For linear input (text or tokens) would be difficult to generate output
+
+
+What to do with ASTs?
+- Reading/Traversing ASTs:
+    + Traversing means visiting different nodes of tree to gain insight or perform actions
+    + Example:
+        + Linting: automate scanning source code to check for bug, style inconsistencies, and format without running program
+        + ESLint (popular linting JS tool) uses espree (parser) to generate AST. If want to write custom rule -> write based on different AST nodes
+        + Rule allow one class in each file
+            let numberOfClasses = 0;
+
+            export default function (context) {
+                return {
+                    ClassDeclaration(node) {
+                        numberOfClasses = numberOfClasses + 1;
+                        if (numberOfClasses > 1) {
+                            context.report({
+                                node,
+                                message: "You shouldn't use more than one class",
+                            });
+                        }
+                    },
+                };
+            }
+            + This code looking for ClassDeclaration nodes and increase global counter
+            + When reach limit will use ESLint's report API to raise a complaint
+
+        + Code is write based on ESLint syntax, but could build similar script without ESLint plugin. For example use underlying espree library to do parsing and traversing manually using Node.js script
+            const fs = require('fs').promises;
+            const path = require('path');
+            const espree = require('espree');
+
+            function checkTopLevelClasses(ast) {
+                let topLevelClassCounter = ast.body.reduce((counter, node) => {
+                    if (node.type === 'ClassDeclaration') {
+                        counter++;
+                    }
+                    return counter;
+                }, 0);
+
+                if (topLevelClassCounter > 1) {
+                    throw new Error(
+                        `Found ${topLevelClassCounter} top level classes. Expected not more than one.`
+                    );
+                }
+            }
+
+            async function run() {
+                const fileName = path.resolve(process.cwd(), process.argv[2]);
+                const content = await fs.readFile(fileName, 'utf8');
+                console.log(fileName);
+
+                const ast = espree.parse(content, { ecmaVersion: 2019 });
+                checkTopLevelClasses(ast);
+            }
+
+            run().catch(console.error);
+
+            + espree.parse(content, ...): convert code to AST
+            + ast.body: array of top-level node of program
+- Modifying/Transforming ASTs:
+    + Having AST makes modify easier and safer than modify code as tokens or raw string
+    + Example:
+        + Babel modifies AST to down-transpile newer features or turn JSX into function call - which happen when compile React or Preact code
+        + Other case would be bundling code, often more complex than just appending file together. If check out codebase of tool such as webpack, parcel, rollup will find all of them use AST as part of bundling workflow
+        + Code coverage tool such as Istanbul:
+            + Inject additional code that increasing different counters for every line, function and statement
+            + After test ran, they can check counters and give detailed insight in what has been executed and what hasn't
+            + Need AST for easier and more predictable
+    + Now all these tool that you likely won't write a lot yourself. But when need to optimization, macros or update larger part of codebase all at once, it really useful for development flow
+    + Example:
+        + The React team maintain a collection of script called react-codemod that can perform common operations related to updating your React version
+            + Tool they use under the hood is called jscodeshift and we can use that to write our own Transformation script as well
+        + When dev debug using alert() but want to avoid shipping that to customer. They could write script to replace all call alert() with console.error() without worrying that might override something like myalert()
+            export default function transformer(file, api) {
+            const j = api.jscodeshift;
+
+            return j(file.source).find(j.CallExpression).forEach((path) => {
+                    const callee = path.node.callee;
+                    console.log(callee);
+                    if (callee.type !== 'Identifier' || callee.name !== 'alert') {
+                        return;
+                    }
+                    j(path).replaceWith(
+                        j.callExpression(j.memberExpression(j.identifier('console'), j.identifier('error')), path.node.arguments)
+                    );
+                })
+                .toSource();
+            }
+            https://astexplorer.net/#/gist/e31b467ff904a96eda7d82247a8d8c4f/1d6cd026831a95f8273d6a5c29cb71db3b2a5837
+- Printing ASTs:
+    + In most case, print and modify AST go hand in hand since you have to output AST you just modified.
+        + Some libraries like recast explicitly focus on print AST in same code style as original
+        + There's also a variety of use case where you want to explicitly print AST differently
+    + Example:
+        + Prettier use AST to reformat code according to config without changing content/meaning of code. The way they do it is by convert code to AST - which completely formatting agnostic and then rewrite based on your rules
+        + Other use case would be to print code in different target language or build your own minification tool
+        + There's a couple of tools to print AST (such as escodegen, astring)

