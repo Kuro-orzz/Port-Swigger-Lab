@@ -1,2 +1,4 @@
 venv/
 .git/
+wp2shell-poc/
+secret_resource/

