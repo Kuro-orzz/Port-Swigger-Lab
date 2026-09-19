@@ -43,6 +43,8 @@ Changing user passwords
 
 04_Username_enumeration_via_subtly_different_responses
 - Bruteforce username -> Response in valid and invalid username is different -> Found valid username -> Bruteforce password -> Different length response
+- Can't bruteforce depend on length of response, it's different each time, depend on token size or something
+- There is a typing error in the response, just filter it, check the one username that have "Invalid username and password" with out "." in the end
 - Description: a small mistake when typing code but need to becareful
 
 05_Username_enumeration_via_response_timing

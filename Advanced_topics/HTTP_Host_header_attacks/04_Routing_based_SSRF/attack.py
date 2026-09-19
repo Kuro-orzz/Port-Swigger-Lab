@@ -70,9 +70,7 @@ def main():
         sys.exit(-1)
 
     s = requests.Session()
-    s.proxies=proxies
-    s.verify = False
-    url = sys.argv[1][:-1] if sys.argv[1][-1] == '/' else sys.argv[1] 
+    url = sys.argv[1].rstrip('/')
 
     target_user = 'carlos'
 

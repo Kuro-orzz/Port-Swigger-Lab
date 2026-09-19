@@ -1,3 +1,0 @@
-username,length,status_code
-carlos,197,504
-root,197,504
